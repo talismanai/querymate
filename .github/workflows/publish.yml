@@ -52,7 +52,7 @@ jobs:
         run: |
           source .venv/bin/activate
           uv pip install -e .[dev]
-          uv pip install toml packaging
+          uv pip install toml packaging build twine
 
       - name: Update version and changelog
         if: github.event_name == 'workflow_dispatch'
