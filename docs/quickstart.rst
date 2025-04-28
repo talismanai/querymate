@@ -48,7 +48,7 @@ QueryMate supports various query parameters:
 .. code-block:: python
 
     # Example query parameters
-    # ?data={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
+    # ?q={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
 
     @app.get("/users")
     async def get_users(
