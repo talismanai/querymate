@@ -1,8 +1,6 @@
 name: Documentation
 
 on:
-  pull_request:
-    types: [opened, synchronize]
   push:
     branches:
       - main
@@ -72,31 +70,12 @@ jobs:
         with:
           path: docs/_build/html
 
-      - name: Comment PR with preview link
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const artifactPath = path.join(process.env.GITHUB_WORKSPACE, 'docs/_build/html');
-            const files = fs.readdirSync(artifactPath);
-            const previewUrl = `https://${process.env.GITHUB_REPOSITORY_OWNER}.github.io/${process.env.GITHUB_REPOSITORY.split('/')[1]}/preview/${process.env.GITHUB_HEAD_REF}/`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `📚 Documentation preview available at: ${previewUrl}`
-            });
-
   deploy_docs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

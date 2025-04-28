@@ -72,7 +72,7 @@ async def get_users(
 
 ```python
 # Example query parameters
-# ?data={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
+# ?q={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
 
 @app.get("/users")
 async def get_users(
@@ -163,7 +163,7 @@ open docs/_build/html/index.html
 
 ## 📚 Documentation
 
-For detailed documentation, visit [querymate.readthedocs.io](https://querymate.readthedocs.io/).
+For detailed documentation, visit [banduk.github.io/querymate](https://banduk.github.io/querymate).
 
 ---
 
