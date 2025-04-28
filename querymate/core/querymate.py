@@ -43,11 +43,17 @@ class Querymate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    q: dict[str, Any] | None = Field(default={}, description="Filter conditions for the query")
+    q: dict[str, Any] | None = Field(
+        default={}, description="Filter conditions for the query"
+    )
     sort: list[str] | None = Field(default=[], description="List of fields to sort by")
-    limit: int | None = Field(default=10, ge=1, le=200, description="Maximum number of records to return")
+    limit: int | None = Field(
+        default=10, ge=1, le=200, description="Maximum number of records to return"
+    )
     offset: int | None = Field(default=0, ge=0, description="Number of records to skip")
-    fields: list[str | dict[str, Any]] | None = Field(default=[], description="Fields to include in the response")
+    fields: list[str | dict[str, Any]] | None = Field(
+        default=[], description="Fields to include in the response"
+    )
 
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":

@@ -15,12 +15,12 @@ from querymate.core.predicate import (
     Nin,
     StartsWith,
 )
-from tests.conftest import User
+from tests.models import User
 
 
-def test_eq_predicate(db):
+def test_eq_predicate() -> None:
     query = select(User)
-    query = Eq.apply(query, User.age, 25)
+    query = Eq.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age == 25)
@@ -28,9 +28,9 @@ def test_eq_predicate(db):
     )
 
 
-def test_ne_predicate(db):
+def test_ne_predicate() -> None:
     query = select(User)
-    query = Ne.apply(query, User.age, 25)
+    query = Ne.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age != 25)
@@ -38,9 +38,9 @@ def test_ne_predicate(db):
     )
 
 
-def test_gt_predicate(db):
+def test_gt_predicate() -> None:
     query = select(User)
-    query = Gt.apply(query, User.age, 25)
+    query = Gt.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age > 25)
@@ -48,9 +48,9 @@ def test_gt_predicate(db):
     )
 
 
-def test_lt_predicate(db):
+def test_lt_predicate() -> None:
     query = select(User)
-    query = Lt.apply(query, User.age, 25)
+    query = Lt.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age < 25)
@@ -58,9 +58,9 @@ def test_lt_predicate(db):
     )
 
 
-def test_gte_predicate(db):
+def test_gte_predicate() -> None:
     query = select(User)
-    query = Gte.apply(query, User.age, 25)
+    query = Gte.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age >= 25)
@@ -68,9 +68,9 @@ def test_gte_predicate(db):
     )
 
 
-def test_lte_predicate(db):
+def test_lte_predicate() -> None:
     query = select(User)
-    query = Lte.apply(query, User.age, 25)
+    query = Lte.apply(query, User.age, 25)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.age <= 25)
@@ -78,59 +78,59 @@ def test_lte_predicate(db):
     )
 
 
-def test_cont_predicate(db):
+def test_cont_predicate() -> None:
     query = select(User)
-    query = Cont.apply(query, User.name, "John")
+    query = Cont.apply(query, User.name, "John")  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
-        .where(User.name.contains("John"))
+        .where(User.name.contains("John"))  # type: ignore
         .compile(compile_kwargs={"literal_binds": True})
     )
 
 
-def test_starts_with_predicate(db):
+def test_starts_with_predicate() -> None:
     query = select(User)
-    query = StartsWith.apply(query, User.name, "John")
+    query = StartsWith.apply(query, User.name, "John")  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
-        .where(User.name.like("John%"))
+        .where(User.name.like("John%"))  # type: ignore
         .compile(compile_kwargs={"literal_binds": True})
     )
 
 
-def test_ends_with_predicate(db):
+def test_ends_with_predicate() -> None:
     query = select(User)
-    query = EndsWith.apply(query, User.name, "Doe")
+    query = EndsWith.apply(query, User.name, "Doe")  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
-        .where(User.name.like("%Doe"))
+        .where(User.name.like("%Doe"))  # type: ignore
         .compile(compile_kwargs={"literal_binds": True})
     )
 
 
-def test_in_predicate(db):
+def test_in_predicate() -> None:
     query = select(User)
-    query = In.apply(query, User.age, [25, 30, 35])
+    query = In.apply(query, User.age, [25, 30, 35])  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
-        .where(User.age.in_([25, 30, 35]))
+        .where(User.age.in_([25, 30, 35]))  # type: ignore
         .compile(compile_kwargs={"literal_binds": True})
     )
 
 
-def test_nin_predicate(db):
+def test_nin_predicate() -> None:
     query = select(User)
-    query = Nin.apply(query, User.age, [25, 30, 35])
+    query = Nin.apply(query, User.age, [25, 30, 35])  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
-        .where(User.age.notin_([25, 30, 35]))
+        .where(User.age.notin_([25, 30, 35]))  # type: ignore
         .compile(compile_kwargs={"literal_binds": True})
     )
 
 
-def test_is_null_predicate(db):
+def test_is_null_predicate() -> None:
     query = select(User)
-    query = IsNull.apply(query, User.email, True)
+    query = IsNull.apply(query, User.email, True)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.email == None)  # noqa: E711
@@ -138,9 +138,9 @@ def test_is_null_predicate(db):
     )
 
 
-def test_is_not_null_predicate(db):
+def test_is_not_null_predicate() -> None:
     query = select(User)
-    query = IsNotNull.apply(query, User.email, True)
+    query = IsNotNull.apply(query, User.email, True)  # type: ignore
     assert str(query.compile(compile_kwargs={"literal_binds": True})) == str(
         select(User)
         .where(User.email != None)  # noqa: E711

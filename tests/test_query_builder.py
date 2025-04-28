@@ -1,20 +1,23 @@
+from collections.abc import Generator
+
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, create_engine, desc, select
 from sqlmodel.pool import StaticPool
 
 from querymate.core.querymate import QueryBuilder
-from tests.conftest import Post, User
+from tests.models import Post, User
 
 
 @pytest.fixture
-def app():
+def app() -> FastAPI:
     app = FastAPI()
     return app
 
 
 @pytest.fixture
-def engine():
+def engine() -> Engine:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -23,12 +26,12 @@ def engine():
 
 
 @pytest.fixture
-def db(engine):
+def db(engine: Engine) -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
 
 
-def test_build_query(db):
+def test_build_query() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.select(["id", "name", {"posts": ["id", "title"]}])
     expected_query = select(User.id, User.name, Post.id, Post.title).join(Post)
@@ -37,7 +40,7 @@ def test_build_query(db):
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
-def test_filter(db):
+def test_filter() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.filter({"age": {"gt": 25}})
@@ -49,7 +52,7 @@ def test_filter(db):
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
-def test_sort(db):
+def test_sort() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.sort(["-age"])
@@ -63,7 +66,7 @@ def test_sort(db):
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
-def test_limit_and_offset(db):
+def test_limit_and_offset() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.limit_and_offset(limit=10, offset=10)
@@ -75,7 +78,7 @@ def test_limit_and_offset(db):
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
-def test_exec(db):
+def test_exec(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
     user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
@@ -95,7 +98,7 @@ def test_exec(db):
     ]
 
 
-def test_fetch(db):
+def test_fetch(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
     user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
@@ -108,7 +111,7 @@ def test_fetch(db):
 
     query_builder = QueryBuilder(model=User)
     query_builder.select(["id", "name", {"posts": ["id", "title"]}])
-    results = query_builder.fetch(db)
+    results: list[User] = query_builder.fetch(db)
 
     assert len(results) == 2
 

@@ -30,7 +30,7 @@ test-cov:
 # Linting and formatting
 lint:
 	@. .venv/bin/activate && ruff check querymate/ tests/
-	@. .venv/bin/activate && mypy querymate/
+	@. .venv/bin/activate && mypy querymate/ tests/
 
 format:
 	@. .venv/bin/activate && black querymate/ tests/
