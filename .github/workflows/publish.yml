@@ -59,7 +59,8 @@ jobs:
         run: |
           source .venv/bin/activate
           python scripts/update_version.py ${{ github.event.inputs.version }}
-          python scripts/update_changelog.py "${{ github.event.inputs.changelog }}" "${{ github.event.inputs.release_type }}"
+          python scripts/update_changelog.py "${{ github.event.inputs.version }}" "${{ github.event.inputs.changelog }}" "${{ github.event.inputs.release_type }}" 
+          
 
       - name: Verify version format
         run: |
