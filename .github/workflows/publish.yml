@@ -13,6 +13,15 @@ on:
         description: 'Changelog entry for this version'
         required: true
         type: string
+      release_type:
+        description: 'Type of release'
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+        default: patch
 
 jobs:
   publish:
@@ -49,12 +58,32 @@ jobs:
         run: |
           source .venv/bin/activate
           python scripts/update_version.py ${{ github.event.inputs.version }}
-          python scripts/update_changelog.py "${{ github.event.inputs.changelog }}"
+          python scripts/update_changelog.py "${{ github.event.inputs.changelog }}" "${{ github.event.inputs.release_type }}"
 
       - name: Verify version format
         run: |
           source .venv/bin/activate
-          python -c "import re; import toml; version = toml.load('pyproject.toml')['project']['version']; assert re.match(r'^\d+\.\d+\.\d+$', version), f'Invalid version format: {version}'"
+          python -c "
+          import re
+          import toml
+          from packaging import version
+          
+          # Load version from pyproject.toml
+          current_version = toml.load('pyproject.toml')['project']['version']
+          
+          # Verify version format
+          assert re.match(r'^\d+\.\d+\.\d+$', current_version), f'Invalid version format: {current_version}'
+          
+          # Get latest tag
+          import subprocess
+          try:
+              latest_tag = subprocess.check_output(['git', 'describe', '--tags', '--abbrev=0']).decode().strip()
+              latest_version = version.parse(latest_tag)
+              current_version = version.parse(current_version)
+              assert current_version > latest_version, f'New version {current_version} must be greater than latest version {latest_version}'
+          except subprocess.CalledProcessError:
+              print('No previous tags found')
+          "
 
       - name: Build package
         run: |
@@ -69,11 +98,36 @@ jobs:
           source .venv/bin/activate
           twine upload dist/*
 
-      - name: Commit version changes
+      - name: Create Git tag
         if: github.event_name == 'workflow_dispatch' && success()
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add pyproject.toml CHANGELOG.md
           git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+          git tag -a "v${{ github.event.inputs.version }}" -m "Release v${{ github.event.inputs.version }}"
+          git push origin "v${{ github.event.inputs.version }}"
           git push
+
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && success()
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ github.event.inputs.version }}
+          body: |
+            ## Changelog
+            
+            ${{ github.event.inputs.changelog }}
+            
+            ## Release Type
+            ${{ github.event.inputs.release_type }} release
+            
+            ## Installation
+            
+            ```bash
+            pip install querymate==${{ github.event.inputs.version }}
+            ```
+          tag_name: v${{ github.event.inputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
