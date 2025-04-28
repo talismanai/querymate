@@ -1,6 +1,6 @@
 from typing import Any
 
-from sqlmodel import Column
+from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlmodel.sql.expression import SelectOfScalar
 
 
@@ -13,13 +13,13 @@ class Predicate:
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the predicate to the query.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to apply the predicate to.
+            field (InstrumentedAttribute): The field to apply the predicate to.
             value (Any): The value to compare against.
 
         Returns:
@@ -39,13 +39,13 @@ class Eq(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the equal to predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -62,13 +62,13 @@ class Ne(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the not equal to predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -85,13 +85,13 @@ class Gt(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the greater than predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -108,13 +108,13 @@ class Lt(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the less than predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -131,13 +131,13 @@ class Gte(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the greater than or equal to predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -154,13 +154,13 @@ class Lte(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the less than or equal to predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to compare.
+            field (InstrumentedAttribute): The field to compare.
             value (Any): The value to compare against.
 
         Returns:
@@ -178,13 +178,13 @@ class Cont(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the contains predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to search in.
+            field (InstrumentedAttribute): The field to search in.
             value (Any): The value to search for.
 
         Returns:
@@ -202,13 +202,13 @@ class StartsWith(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the starts with predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (Any): The prefix to match.
 
         Returns:
@@ -226,13 +226,13 @@ class EndsWith(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: Any
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: Any
     ) -> SelectOfScalar:
         """Apply the ends with predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (Any): The suffix to match.
 
         Returns:
@@ -249,13 +249,13 @@ class In(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: list[Any]
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: list[Any]
     ) -> SelectOfScalar:
         """Apply the in predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (list[Any]): The list of values to match against.
 
         Returns:
@@ -272,13 +272,13 @@ class Nin(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: list[Any]
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: list[Any]
     ) -> SelectOfScalar:
         """Apply the not in predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (list[Any]): The list of values to exclude.
 
         Returns:
@@ -295,13 +295,13 @@ class IsNull(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: bool
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: bool
     ) -> SelectOfScalar:
         """Apply the is null predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (bool): True to match null values, False to match non-null values.
 
         Returns:
@@ -321,13 +321,13 @@ class IsNotNull(Predicate):
 
     @classmethod
     def apply(
-        cls, query: SelectOfScalar, field: Column[Any], value: bool
+        cls, query: SelectOfScalar, field: InstrumentedAttribute, value: bool
     ) -> SelectOfScalar:
         """Apply the is not null predicate.
 
         Args:
             query (SelectOfScalar): The current query being built.
-            field (Column[Any]): The field to check.
+            field (InstrumentedAttribute): The field to check.
             value (bool): True to match non-null values, False to match null values.
 
         Returns:

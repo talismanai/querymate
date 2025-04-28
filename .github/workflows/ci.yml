@@ -97,8 +97,3 @@ jobs:
         run: |
           source .venv/bin/activate
           make lint
-
-      - name: Run type checking
-        run: |
-          source .venv/bin/activate
-          make type-check

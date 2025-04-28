@@ -1,21 +1,24 @@
+from collections.abc import Generator
+
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.datastructures import QueryParams
+from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from querymate.core.querymate import Querymate
-from tests.conftest import Post, User
+from tests.models import Post, User
 
 
 @pytest.fixture
-def app():
+def app() -> FastAPI:
     app = FastAPI()
     return app
 
 
 @pytest.fixture
-def engine():
+def engine() -> Engine:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -24,12 +27,12 @@ def engine():
 
 
 @pytest.fixture
-def db(engine):
+def db(engine: Engine) -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
 
 
-def test_to_qs():
+def test_to_qs() -> None:
     querymate = Querymate(
         q={"age": {"gt": 25}},
         sort=["-age"],
@@ -44,7 +47,7 @@ def test_to_qs():
     )
 
 
-def test_from_qs():
+def test_from_qs() -> None:
     querymate = Querymate(
         q={"age": {"gt": 25}},
         sort=["-age"],
@@ -60,7 +63,7 @@ def test_from_qs():
     assert querymate.fields == ["id", "name"]
 
 
-def test_querymate_dependency():
+def test_querymate_dependency() -> None:
     querymate = Querymate(
         q={"age": {"gt": 25}},
         sort=["-age"],
@@ -76,7 +79,7 @@ def test_querymate_dependency():
     assert querymate_dep.q == querymate.q
 
 
-def test_run(db):
+def test_run(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
     user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
