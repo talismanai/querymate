@@ -1,0 +1,83 @@
+name: Security
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Create and activate virtual environment
+        run: |
+          uv venv
+          source .venv/bin/activate
+          which python
+          python --version
+          pip list
+
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          uv pip install -e .[dev]
+          uv pip install bandit safety pip-licenses
+
+      - name: Run Bandit security scanner
+        run: |
+          source .venv/bin/activate
+          bandit -r querymate/ -f json -o bandit-results.json || true
+          if [ -s bandit-results.json ]; then
+            echo "Security issues found by Bandit. Please review the results."
+            cat bandit-results.json
+            exit 1
+          fi
+
+      - name: Run Safety dependency checker
+        run: |
+          source .venv/bin/activate
+          safety check --full-report
+
+      - name: Check license compliance
+        run: |
+          source .venv/bin/activate
+          pip-licenses --format=json --output-file=licenses.json
+          python -c "
+          import json
+          with open('licenses.json') as f:
+              licenses = json.load(f)
+          allowed_licenses = {'MIT', 'Apache-2.0', 'BSD-3-Clause', 'BSD-2-Clause', 'ISC', 'Python-2.0'}
+          for pkg in licenses:
+              if pkg['License'] not in allowed_licenses:
+                  print(f'Package {pkg["Name"]} uses {pkg["License"]} which is not in allowed list')
+                  exit(1)
+          "
+
+      - name: Run dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v3
+
+      - name: Run Secret Scanning
+        uses: github/codeql-action/init@v2
+        with:
+          languages: python
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
