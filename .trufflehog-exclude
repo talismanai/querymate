@@ -1,0 +1,8 @@
+.venv
+venv
+env
+site-packages
+dist
+build
+.buildinfo
+uv.lock

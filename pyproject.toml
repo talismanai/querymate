@@ -1,0 +1,66 @@
+[project]
+name = "querymate"
+version = "0.1.5"
+description = "A structured query builder for FastAPI and SQLModel"
+dependencies = [ "fastapi>=0.109.0", "sqlmodel>=0.0.14", "pydantic>=2.6.0", "sqlalchemy>=2.0.0", "ipdb>=0.13.13",]
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+[[project.authors]]
+name = "Mauricio Banduk"
+email = "mauricio@banduk.com"
+
+[build-system]
+requires = [ "setuptools>=61.0",]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "isort>=5.13.0", "mypy>=1.8.0", "sphinx>=7.2.0", "sphinx-rtd-theme>=2.0.0", "sphinx-autodoc-typehints>=1.25.0", "myst-parser>=2.0.0", "sphinx-copybutton>=0.5.0", "sphinx-design>=0.5.0", "furo>=2024.0.0", "httpx>=0.27.0",]
+
+[tool.setuptools]
+packages = [ "querymate",]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.black]
+line-length = 88
+target-version = [ "py311",]
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+line_length = 80
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[tool.ruff.lint]
+select = [ "E", "F", "I", "N", "UP", "B", "RUF",]
+ignore = [ "E501", "N806",]
+
+[tool.pytest.ini_options]
+testpaths = [ "tests",]
+python_files = [ "test_*.py",]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [ "F811", "B008", "E721",]
+
+[tool.ruff.lint.isort]
+known-first-party = [ "querymate",]

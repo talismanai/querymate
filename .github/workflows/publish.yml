@@ -1,0 +1,147 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.0)'
+        required: true
+        type: string
+      changelog:
+        description: 'Changelog entry for this version'
+        required: true
+        type: string
+      release_type:
+        description: 'Type of release'
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+        default: patch
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Create and activate virtual environment
+        run: |
+          uv venv
+          source .venv/bin/activate
+          which python
+          python --version
+          pip list
+
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          uv pip install -e .[dev]
+          uv pip install toml packaging build twine
+
+      - name: Update version and changelog
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          source .venv/bin/activate
+          python scripts/update_version.py ${{ github.event.inputs.version }}
+          python scripts/update_changelog.py "${{ github.event.inputs.version }}" "${{ github.event.inputs.changelog }}" "${{ github.event.inputs.release_type }}"
+
+      - name: Verify version format
+        run: |
+          source .venv/bin/activate
+          python -c "
+          import re
+          import toml
+          from packaging import version
+          
+          # Load version from pyproject.toml
+          current_version = toml.load('pyproject.toml')['project']['version']
+          
+          # Verify version format
+          assert re.match(r'^\d+\.\d+\.\d+$', current_version), f'Invalid version format: {current_version}'
+          
+          # Get latest tag
+          import subprocess
+          try:
+              latest_tag = subprocess.check_output(['git', 'describe', '--tags', '--abbrev=0']).decode().strip()
+              latest_version = version.parse(latest_tag)
+              current_version = version.parse(current_version)
+              assert current_version > latest_version, f'New version {current_version} must be greater than latest version {latest_version}'
+          except subprocess.CalledProcessError:
+              print('No previous tags found')
+          "
+
+      - name: Build package
+        run: |
+          source .venv/bin/activate
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          source .venv/bin/activate
+          twine upload dist/*
+
+      - name: Create Git tag
+        if: github.event_name == 'workflow_dispatch' && success()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add pyproject.toml CHANGELOG.md
+          git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+          git tag -a "v${{ github.event.inputs.version }}" -m "Release v${{ github.event.inputs.version }}"
+          git push origin "v${{ github.event.inputs.version }}"
+          git push
+
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && success()
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ github.event.inputs.version }}
+          body: |
+            ## Changelog
+            
+            ${{ github.event.inputs.changelog }}
+            
+            ## Release Type
+            ${{ github.event.inputs.release_type }} release
+            
+            ## Installation
+            
+            ```bash
+            pip install querymate==${{ github.event.inputs.version }}
+            ```
+          tag_name: v${{ github.event.inputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true

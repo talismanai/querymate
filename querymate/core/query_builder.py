@@ -1,0 +1,447 @@
+from logging import getLogger
+from typing import Any, TypeVar
+
+from sqlalchemy import Join
+from sqlalchemy.orm import Mapper
+from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.orm.relationships import RelationshipProperty
+from sqlmodel import Session, SQLModel, inspect, select
+from sqlmodel.sql.expression import SelectOfScalar
+
+from querymate.core.filter import FilterBuilder
+
+T = TypeVar("T", bound=SQLModel)
+
+# Type aliases for better readability
+FieldSelection = str | dict[str, list[str]]
+SelectResult = tuple[list[InstrumentedAttribute], list[Join]]
+
+# TODO: Make this configurable
+logger = getLogger(__name__)
+
+# Constants
+# TODO: Make these configurable
+DEFAULT_LIMIT = 10
+DEFAULT_OFFSET = 0
+
+
+class QueryBuilder:
+    """
+    A flexible query builder for SQLModel with support for complex queries.
+
+    This class provides methods for building SQL queries with support for field selection,
+    filtering, sorting, and pagination. It handles relationships and nested queries.
+
+    Attributes:
+        model (type[T]): The SQLModel model class to query.
+        query (SelectOfScalar): The current SQL query being built.
+        select (list[FieldSelection]): Fields to include in the response.
+        filter (dict[str, Any]): Filter conditions for the query.
+        sort (list[str]): List of fields to sort by.
+        limit (int | None): Maximum number of records to return.
+        offset (int | None): Number of records to skip.
+    """
+
+    model: type[SQLModel]
+    query: SelectOfScalar
+    select: list[FieldSelection]
+    filter: dict[str, Any]
+    sort: list[str]
+    limit: int | None = DEFAULT_LIMIT
+    offset: int | None = DEFAULT_OFFSET
+
+    def __init__(self, model: type[T]) -> None:
+        """Initialize the QueryBuilder.
+
+        Args:
+            model (type[T]): The SQLModel model class to query.
+        """
+        self.model = model
+
+    def _select(
+        self, model: type[SQLModel], fields: list[FieldSelection]
+    ) -> SelectResult:
+        """
+        Select fields to be returned in the query.
+
+        This method supports both direct field selection and relationship field selection
+        through nested dictionaries.
+
+        Args:
+            fields (list[FieldSelection]): List of fields to select.
+                Can include nested dictionaries for relationship fields.
+                If None, all fields are selected.
+
+        Returns:
+            SelectResult: tuple containing list of selected columns and joins.
+        """
+        select_columns: list[InstrumentedAttribute] = []
+
+        model_fields: list[str] = []
+        relationships: list[dict[str, list[Any]]] = []
+        for field in fields:
+            if isinstance(field, str):
+                if field not in model_fields:
+                    model_fields.append(field)
+            elif isinstance(field, dict):
+                relationships.append(field)
+
+        # Handling model fields
+        valid_model_fields: list[str] = list(model.model_fields.keys())
+        if "*" in model_fields:
+            model_fields = sorted(valid_model_fields)
+
+        for field in model_fields:
+            if field not in valid_model_fields:
+                logger.warning(
+                    f"Invalid field: {field}. Valid fields: {valid_model_fields}"
+                )
+            select_columns.append(getattr(model, field))
+
+        # Handling relationships
+        inspection: Mapper = inspect(model)
+        valid_relationships: set[str] = set(inspection.relationships.keys())
+        joins: list[Join] = []
+        for relationship in relationships:
+            for relationship_name, relationship_fields in relationship.items():
+                if relationship_name not in valid_relationships:
+                    logger.warning(
+                        f"Invalid relationship: {relationship_name}. Valid relationships: {valid_relationships}"
+                    )
+                relationship_property: RelationshipProperty | None = (
+                    inspection.relationships.get(relationship_name)
+                )
+                if relationship_property is None:
+                    logger.warning(f"Invalid relationship: {relationship_name}")
+                    continue
+                relationship_model: type[SQLModel] = relationship_property.mapper.class_
+                nested = self._select(relationship_model, relationship_fields)
+                select_columns.extend(nested[0])
+                joins.extend(nested[1])
+                joins.append(getattr(model, relationship_property.key))
+
+        return select_columns, joins
+
+    def apply_select(
+        self, fields: list[str | dict[str, list[str]]] | None = None
+    ) -> "QueryBuilder":
+        """
+        Select fields to be returned in the query.
+
+        This method supports both direct field selection and relationship field selection
+        through nested dictionaries.
+
+        Args:
+            fields (list[str | dict[str, list[str]]] | None): List of fields to select.
+                Can include nested dictionaries for relationship fields.
+                If None, all fields are selected.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.select(["name", "email", {"posts": ["title", "content"]}])
+            ```
+        """
+        # valid_fields: set[str] = set(self.model.model_fields.keys())
+        if not fields:
+            fields = list(self.model.model_fields.keys())
+        self.select = fields
+        select_columns, joins = self._select(self.model, fields)
+        self.query = select(*select_columns)
+        for join in joins:
+            self.query = self.query.join(join)
+        return self
+
+    def apply_filter(self, filters: dict[str, Any] | None = None) -> "QueryBuilder":
+        """Apply filter conditions to the query.
+
+        This method supports various filter operators and relationship filtering.
+
+        Args:
+            conditions (dict[str, Any] | None): Filter conditions to apply.
+                Each condition can be a direct value (equals) or a dict with an operator.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.filter({
+                "and": [
+                    {"age": {"gt": 18}},
+                    {"name": {"starts_with": "J"}},
+                    {"or": [
+                        {"posts.title": {"cont": "Python"}},
+                        {"posts.title": {"cont": "SQL"}}
+                    ]}
+                ]
+            })
+            ```
+            The above query will be translated to:
+            ```sql
+            SELECT * FROM users WHERE age > 18 AND name LIKE 'J%' AND (posts.title LIKE '%Python%' OR posts.title LIKE '%SQL%')
+            ```
+
+        Example:
+            ```python
+            builder.filter({
+                "age": {"gt": 18},
+            })
+            ```
+            The above query will be translated to:
+            ```sql
+            SELECT * FROM users WHERE age > 18
+            ```
+        """
+        if not filters:
+            return self
+        self.filters = filters
+
+        built_filters: list[Any] = FilterBuilder(self.model).build(filters)
+        self.query = self.query.where(*built_filters)
+        return self
+
+    def apply_sort(self, sort: list[str] | None = None) -> "QueryBuilder":
+        """Apply ordering to the query.
+
+        Args:
+            sort (list[str] | None): List of fields to sort by.
+                Prefix with "-" for descending order.
+                Prefix with "+" or no prefix for ascending order.
+                Supports relationship fields using dot notation.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.sort(["-age", "name", "posts.title"])
+            ```
+        """
+        if not sort:
+            return self
+
+        self.sort = sort
+        for sort_param in sort:
+            if sort_param.startswith("-"):
+                field = sort_param[1:]
+                direction = "desc"
+            elif sort_param.startswith("+"):
+                field = sort_param[1:]
+                direction = "asc"
+            else:
+                field = sort_param
+                direction = "asc"
+
+            # Handle nested fields (e.g. "posts.title")
+            field_parts = field.split(".")
+            current_entity = self.query.column_descriptions[0]["entity"]
+            order_expr = None
+
+            for i, part in enumerate(field_parts):
+                if i == len(field_parts) - 1:
+                    # Last part of the path - this is the field to sort by
+                    order_expr = getattr(current_entity, part)
+                else:
+                    # Navigate through relationships
+                    current_entity = getattr(
+                        current_entity, part
+                    ).property.mapper.class_
+
+            if order_expr is not None:
+                if direction.lower() == "desc":
+                    self.query = self.query.order_by(order_expr.desc())
+                else:
+                    self.query = self.query.order_by(order_expr)
+
+        return self
+
+    def apply_limit(self, limit: int | None = None) -> "QueryBuilder":
+        """Apply limit and offset to the query.
+
+        Args:
+            limit (int | None): Maximum number of records to return.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.limit(10)
+            ```
+        """
+        if not limit:
+            return self
+        if limit < 0:
+            logger.warning(
+                f"Limit is negative ({limit}), using default limit ({DEFAULT_LIMIT})"
+            )
+            self.limit = DEFAULT_LIMIT
+        else:
+            self.limit = limit
+
+        self.query = self.query.limit(self.limit)
+        return self
+
+    def apply_offset(self, offset: int | None = None) -> "QueryBuilder":
+        """Apply offset to the query.
+
+        Args:
+            offset (int | None): Number of records to skip.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.offset(10)  # Skip the first 10 records
+            ```
+        """
+        if not offset:
+            return self
+        if offset < 0:
+            logger.warning(
+                f"Offset is negative ({offset}), using default offset ({DEFAULT_OFFSET})"
+            )
+            self.offset = DEFAULT_OFFSET
+        else:
+            self.offset = offset
+
+        self.query = self.query.offset(self.offset)
+        return self
+
+    def reconstruct_object(
+        self,
+        model: type[T],
+        fields: list[FieldSelection],
+        row: tuple[Any, ...],
+        field_idx: list[int],
+    ) -> tuple[T, list[int]]:
+        """Reconstruct a model instance from a query result row.
+
+        This method handles both direct fields and relationship fields.
+
+        Args:
+            model (type[T]): The SQLModel model class.
+            fields (list[FieldSelection]): Fields to include.
+            row (tuple[Any, ...]): The query result row.
+            field_idx (list[int]): Current field index for tracking position in row.
+
+        Returns:
+            tuple[T, list[int]]: The reconstructed model instance and updated field index.
+        """
+        mapper = inspect(model)
+        obj_kwargs: dict[str, Any] = {}
+        related_objs: dict[str, list[Any]] = {}
+
+        for field in fields:
+            if isinstance(field, str):
+                obj_kwargs[field] = row[field_idx[0]]
+                field_idx[0] += 1
+            elif isinstance(field, dict):
+                for relation_name, relation_fields in field.items():
+                    if not mapper:
+                        raise ValueError(f"Mapper for {model} not found")
+                    relation = mapper.relationships[relation_name]
+                    related_model: type[T] = relation.mapper.class_
+                    # Recursively reconstruct related object(s)
+                    related_obj, field_idx = self.reconstruct_object(
+                        related_model,
+                        relation_fields,  # type: ignore
+                        row,
+                        field_idx,
+                    )
+                    related_objs.setdefault(relation_name, []).append(related_obj)
+
+        obj: T = model(**obj_kwargs)
+        for relation_name, rel_objs in related_objs.items():
+            setattr(obj, relation_name, rel_objs)
+        return obj, field_idx
+
+    def reconstruct_objects(
+        self, results: list[tuple[Any, ...]], model: type[T]
+    ) -> list[T]:
+        """Reconstruct model instances from query results.
+
+        Args:
+            results (list[tuple[Any, ...]]): List of query result rows.
+
+        Returns:
+            list[T]: List of reconstructed model instances.
+        """
+        reconstructed: list[T] = []
+
+        for row in results:
+            field_idx = [0]
+            obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
+            reconstructed.append(obj)
+
+        return reconstructed
+
+    def build(
+        self,
+        select: list[str | dict[str, list[str]]] | None = None,
+        filter: dict[str, Any] | None = None,
+        sort: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> "QueryBuilder":
+        """Build a complete query with all parameters.
+
+        This method combines field selection, filtering, sorting, and pagination
+        into a single method call.
+
+        Args:
+            fields (list[str | dict[str, list[str]]] | None): Fields to select.
+            filter (dict[str, Any] | None): Filter conditions.
+            sort (list[str] | None): Sort parameters.
+            limit (int | None): Maximum number of records.
+            offset (int | None): Number of records to skip.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.build(
+                fields=["name", {"posts": ["title"]}],
+                filter={"age": {"gt": 18}},
+                sort=["-name"],
+                limit=10,
+                offset=0
+            )
+            ```
+        """
+        return (
+            self.apply_select(select)
+            .apply_filter(filter)
+            .apply_sort(sort)
+            .apply_limit(limit)
+            .apply_offset(offset)
+        )
+
+    def exec(self, db: Session) -> list[tuple[Any, ...]]:
+        """Execute the query and return raw results.
+
+        Args:
+            db (Session): The SQLModel database session.
+
+        Returns:
+            list[tuple[Any, ...]]: Raw query results.
+        """
+        return db.exec(self.query).unique().all()  # type: ignore
+
+    def fetch(self, db: Session, model: type[T]) -> list[T]:
+        """Execute the query and return model instances.
+
+        This method combines query execution with object reconstruction.
+
+        Args:
+            db (Session): The SQLModel database session.
+
+        Returns:
+            list[T]: List of model instances.
+        """
+        return self.reconstruct_objects(self.exec(db), model)
