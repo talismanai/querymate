@@ -1,17 +1,17 @@
 from sqlmodel import select
 
 from querymate.core.filter import (
-    ContPredicate,
+    ContainsPredicate,
     EndsWithPredicate,
-    EqPredicate,
-    GePredicate,
-    GtPredicate,
+    EqualPredicate,
+    GreaterThanOrEqualPredicate,
+    GreaterThanPredicate,
     InPredicate,
     IsNotNullPredicate,
     IsNullPredicate,
-    LePredicate,
-    LtPredicate,
-    NePredicate,
+    LessThanOrEqualPredicate,
+    LessThanPredicate,
+    NotEqualPredicate,
     NotInPredicate,
     StartsWithPredicate,
 )
@@ -20,7 +20,7 @@ from tests.models import User
 
 def test_eq_predicate() -> None:
     query = select(User)
-    query = EqPredicate().apply(User.age, 25)  # type: ignore
+    query = EqualPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age = 25'
     )
@@ -28,7 +28,7 @@ def test_eq_predicate() -> None:
 
 def test_ne_predicate() -> None:
     query = select(User)
-    query = NePredicate().apply(User.age, 25)  # type: ignore
+    query = NotEqualPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age != 25'
     )
@@ -36,7 +36,7 @@ def test_ne_predicate() -> None:
 
 def test_gt_predicate() -> None:
     query = select(User)
-    query = GtPredicate().apply(User.age, 25)  # type: ignore
+    query = GreaterThanPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age > 25'
     )
@@ -44,7 +44,7 @@ def test_gt_predicate() -> None:
 
 def test_lt_predicate() -> None:
     query = select(User)
-    query = LtPredicate().apply(User.age, 25)  # type: ignore
+    query = LessThanPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age < 25'
     )
@@ -52,7 +52,7 @@ def test_lt_predicate() -> None:
 
 def test_gte_predicate() -> None:
     query = select(User)
-    query = GePredicate().apply(User.age, 25)  # type: ignore
+    query = GreaterThanOrEqualPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age >= 25'
     )
@@ -60,7 +60,7 @@ def test_gte_predicate() -> None:
 
 def test_lte_predicate() -> None:
     query = select(User)
-    query = LePredicate().apply(User.age, 25)  # type: ignore
+    query = LessThanOrEqualPredicate().apply(User.age, 25)  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True})) == '"user".age <= 25'
     )
@@ -68,7 +68,7 @@ def test_lte_predicate() -> None:
 
 def test_cont_predicate() -> None:
     query = select(User)
-    query = ContPredicate().apply(User.name, "John")  # type: ignore
+    query = ContainsPredicate().apply(User.name, "John")  # type: ignore
     assert (
         str(query.compile(compile_kwargs={"literal_binds": True}))
         == "\"user\".name LIKE '%' || 'John' || '%'"
