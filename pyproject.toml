@@ -9,7 +9,9 @@ license = "MIT"
 [[project.authors]]
 name = "Mauricio Banduk"
 email = "mauricio@banduk.com"
-
+[project.urls]
+Homepage = "https://github.com/banduk/querymate"
+Repository = "https://github.com/banduk/querymate"
 [build-system]
 requires = [ "setuptools>=61.0",]
 build-backend = "setuptools.build_meta"
