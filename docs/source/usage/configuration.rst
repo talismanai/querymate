@@ -28,13 +28,15 @@ The following query parameter names can be configured:
 +================+==================+==========================================+
 | QUERY_PARAM_NAME | "q"           | Main query parameter name                |
 +----------------+------------------+------------------------------------------+
+| SELECT_PARAM_NAME | "select"     | Select parameter name                    |
++----------------+------------------+------------------------------------------+
+| FILTER_PARAM_NAME | "filter"     | Filter parameter name                    |
++----------------+------------------+------------------------------------------+
 | SORT_PARAM_NAME  | "sort"         | Sort parameter name                      |
 +----------------+------------------+------------------------------------------+
 | LIMIT_PARAM_NAME | "limit"        | Limit parameter name                     |
 +----------------+------------------+------------------------------------------+
 | OFFSET_PARAM_NAME | "offset"      | Offset parameter name                    |
-+----------------+------------------+------------------------------------------+
-| FIELDS_PARAM_NAME | "fields"      | Fields parameter name                    |
 +----------------+------------------+------------------------------------------+
 
 Logging
@@ -110,4 +112,4 @@ Field selection behavior can be configured:
 +----------------+------------------+------------------------------------------+
 | INCLUDE_REQUIRED_FIELDS | true    | Always include required fields           |
 +----------------+------------------+------------------------------------------+
-``` 
+```

@@ -73,10 +73,7 @@ class QueryMateSettings(BaseSettings):
         default=True, description="Always include required fields"
     )
 
-    model_config = SettingsConfigDict(
-        env_prefix="QUERYMATE_",
-        case_sensitive=False
-    )
+    model_config = SettingsConfigDict(env_prefix="QUERYMATE_", case_sensitive=False)
 
 
 # Create and export a global settings instance
