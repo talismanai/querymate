@@ -1,6 +1,6 @@
 [project]
 name = "querymate"
-version = "0.1.0"
+version = "0.3.0"
 description = "A structured query builder for FastAPI and SQLModel"
 dependencies = [ "fastapi>=0.109.0", "sqlmodel>=0.0.14", "pydantic>=2.6.0", "pydantic-settings>=2.1.0", "sqlalchemy>=2.0.0", "ipdb>=0.13.13",]
 requires-python = ">=3.11"
@@ -9,12 +9,14 @@ license = "MIT"
 [[project.authors]]
 name = "Mauricio Banduk"
 email = "mauricio@banduk.com"
-[project.urls]
-Homepage = "https://github.com/banduk/querymate"
-Repository = "https://github.com/banduk/querymate"
+
 [build-system]
 requires = [ "setuptools>=61.0",]
 build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/banduk/querymate"
+Repository = "https://github.com/banduk/querymate"
 
 [project.optional-dependencies]
 dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "isort>=5.13.0", "mypy>=1.8.0", "sphinx>=7.2.0", "sphinx-rtd-theme>=2.0.0", "sphinx-autodoc-typehints>=1.25.0", "myst-parser>=2.0.0", "sphinx-copybutton>=0.5.0", "sphinx-design>=0.5.0", "furo>=2024.0.0", "httpx>=0.27.0",]
