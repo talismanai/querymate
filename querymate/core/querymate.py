@@ -7,6 +7,7 @@ from fastapi.datastructures import QueryParams
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, SQLModel
 
+from querymate.core.config import settings
 from querymate.core.query_builder import QueryBuilder
 
 T = TypeVar("T", bound=SQLModel)
@@ -47,17 +48,34 @@ class Querymate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    select: list[FieldSelection] | None = Field(
-        default=[], description="Fields to include in the response"
+    select: list[FieldSelection] | None = Field(  # type: ignore[literal-required]
+        default=[],
+        description="Fields to include in the response",
+        alias=settings.SELECT_PARAM_NAME,
     )
-    filter: FilterCondition | None = Field(
-        default={}, description="Filter conditions for the query"
+    filter: FilterCondition | None = Field(  # type: ignore[literal-required]
+        default={},
+        description="Filter conditions for the query",
+        alias=settings.FILTER_PARAM_NAME,
     )
-    sort: list[str] | None = Field(default=[], description="List of fields to sort by")
-    limit: int | None = Field(
-        default=10, ge=1, le=200, description="Maximum number of records to return"
+    sort: list[str] | None = Field(  # type: ignore[literal-required]
+        default=[],
+        description="List of fields to sort by",
+        alias=settings.SORT_PARAM_NAME,
     )
-    offset: int | None = Field(default=0, ge=0, description="Number of records to skip")
+    limit: int | None = Field(  # type: ignore[literal-required]
+        default=settings.DEFAULT_LIMIT,
+        ge=1,
+        le=settings.MAX_LIMIT,
+        description="Maximum number of records to return",
+        alias=settings.LIMIT_PARAM_NAME,
+    )
+    offset: int | None = Field(  # type: ignore[literal-required]
+        default=settings.DEFAULT_OFFSET,
+        ge=0,
+        description="Number of records to skip",
+        alias=settings.OFFSET_PARAM_NAME,
+    )
 
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
@@ -72,12 +90,12 @@ class Querymate(BaseModel):
         Raises:
             ValueError: If the query parameter contains invalid JSON.
         """
-        query: str | None = query_params.get("q")
+        # First try to get the main query parameter
+        query: str | None = query_params.get(settings.QUERY_PARAM_NAME)
         if not query:
             return cls()
-
         try:
-            return cls.model_validate(json.loads(query))
+            return cls.model_validate(json.loads(query), by_alias=True)
         except json.JSONDecodeError as e:
             raise ValueError("Invalid JSON in query parameter") from e
 
@@ -99,7 +117,7 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return urlencode({"q": self.model_dump_json()})
+        return urlencode({"q": self.model_dump_json(by_alias=True)})
 
     def run(self, db: Session, model: type[T]) -> list[T]:
         """Build and execute the query based on the parameters.

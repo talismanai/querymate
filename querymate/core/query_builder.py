@@ -1,5 +1,5 @@
 from logging import getLogger
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from sqlalchemy import Join
 from sqlalchemy.orm import Mapper
@@ -8,6 +8,7 @@ from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlmodel import Session, SQLModel, inspect, select
 from sqlmodel.sql.expression import SelectOfScalar
 
+from querymate.core.config import settings
 from querymate.core.filter import FilterBuilder
 
 T = TypeVar("T", bound=SQLModel)
@@ -16,13 +17,9 @@ T = TypeVar("T", bound=SQLModel)
 FieldSelection = str | dict[str, list[str]]
 SelectResult = tuple[list[InstrumentedAttribute], list[Join]]
 
-# TODO: Make this configurable
+# Configure logger
 logger = getLogger(__name__)
-
-# Constants
-# TODO: Make these configurable
-DEFAULT_LIMIT = 10
-DEFAULT_OFFSET = 0
+logger.setLevel(settings.LOG_LEVEL)
 
 
 class QueryBuilder:
@@ -47,8 +44,8 @@ class QueryBuilder:
     select: list[FieldSelection]
     filter: dict[str, Any]
     sort: list[str]
-    limit: int | None = DEFAULT_LIMIT
-    offset: int | None = DEFAULT_OFFSET
+    limit: int | None = settings.DEFAULT_LIMIT
+    offset: int | None = settings.DEFAULT_OFFSET
 
     def __init__(self, model: type[T]) -> None:
         """Initialize the QueryBuilder.
@@ -57,6 +54,10 @@ class QueryBuilder:
             model (type[T]): The SQLModel model class to query.
         """
         self.model = model
+        self.query = select(model)
+        self.select = []
+        self.filter = {}
+        self.sort = []
 
     def _select(
         self, model: type[SQLModel], fields: list[FieldSelection]
@@ -144,7 +145,6 @@ class QueryBuilder:
             builder.select(["name", "email", {"posts": ["title", "content"]}])
             ```
         """
-        # valid_fields: set[str] = set(self.model.model_fields.keys())
         if not fields:
             fields = list(self.model.model_fields.keys())
         self.select = fields
@@ -154,75 +154,45 @@ class QueryBuilder:
             self.query = self.query.join(join)
         return self
 
-    def apply_filter(self, filters: dict[str, Any] | None = None) -> "QueryBuilder":
+    def apply_filter(self, filter_dict: dict[str, Any] | None = None) -> "QueryBuilder":
         """Apply filter conditions to the query.
 
-        This method supports various filter operators and relationship filtering.
-
         Args:
-            conditions (dict[str, Any] | None): Filter conditions to apply.
-                Each condition can be a direct value (equals) or a dict with an operator.
+            filter_dict (dict[str, Any] | None): Filter conditions to apply.
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
 
         Example:
             ```python
-            builder.filter({
-                "and": [
-                    {"age": {"gt": 18}},
-                    {"name": {"starts_with": "J"}},
-                    {"or": [
-                        {"posts.title": {"cont": "Python"}},
-                        {"posts.title": {"cont": "SQL"}}
-                    ]}
-                ]
-            })
-            ```
-            The above query will be translated to:
-            ```sql
-            SELECT * FROM users WHERE age > 18 AND name LIKE 'J%' AND (posts.title LIKE '%Python%' OR posts.title LIKE '%SQL%')
-            ```
-
-        Example:
-            ```python
-            builder.filter({
-                "age": {"gt": 18},
-            })
-            ```
-            The above query will be translated to:
-            ```sql
-            SELECT * FROM users WHERE age > 18
+            builder.filter({"age": {"gt": 18}, "name": {"cont": "John"}})
             ```
         """
-        if not filters:
+        if not filter_dict:
             return self
-        self.filters = filters
-
-        built_filters: list[Any] = FilterBuilder(self.model).build(filters)
-        self.query = self.query.where(*built_filters)
+        self.filter = filter_dict
+        filter_builder = FilterBuilder(self.model)
+        filters = filter_builder.build(filter_dict)
+        if filters:
+            self.query = self.query.where(*filters)
         return self
 
     def apply_sort(self, sort: list[str] | None = None) -> "QueryBuilder":
-        """Apply ordering to the query.
+        """Apply sorting to the query.
 
         Args:
             sort (list[str] | None): List of fields to sort by.
-                Prefix with "-" for descending order.
-                Prefix with "+" or no prefix for ascending order.
-                Supports relationship fields using dot notation.
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
 
         Example:
             ```python
-            builder.sort(["-age", "name", "posts.title"])
+            builder.sort(["-name", "age", "posts.title"])  # Sort by name descending, then age ascending, then posts.title ascending
             ```
         """
         if not sort:
             return self
-
         self.sort = sort
         for sort_param in sort:
             if sort_param.startswith("-"):
@@ -276,9 +246,9 @@ class QueryBuilder:
             return self
         if limit < 0:
             logger.warning(
-                f"Limit is negative ({limit}), using default limit ({DEFAULT_LIMIT})"
+                f"Limit is negative ({limit}), using default limit ({settings.DEFAULT_LIMIT})"
             )
-            self.limit = DEFAULT_LIMIT
+            self.limit = settings.DEFAULT_LIMIT
         else:
             self.limit = limit
 
@@ -303,14 +273,100 @@ class QueryBuilder:
             return self
         if offset < 0:
             logger.warning(
-                f"Offset is negative ({offset}), using default offset ({DEFAULT_OFFSET})"
+                f"Offset is negative ({offset}), using default offset ({settings.DEFAULT_OFFSET})"
             )
-            self.offset = DEFAULT_OFFSET
+            self.offset = settings.DEFAULT_OFFSET
         else:
             self.offset = offset
 
         self.query = self.query.offset(self.offset)
         return self
+
+    def build(
+        self,
+        select: list[str | dict[str, list[str]]] | None = None,
+        filter: dict[str, Any] | None = None,
+        sort: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> "QueryBuilder":
+        """Build a complete query with all parameters.
+
+        This method combines field selection, filtering, sorting, and pagination
+        into a single method call.
+
+        Args:
+            fields (list[str | dict[str, list[str]]] | None): Fields to select.
+            filter (dict[str, Any] | None): Filter conditions.
+            sort (list[str] | None): Sort parameters.
+            limit (int | None): Maximum number of records.
+            offset (int | None): Number of records to skip.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+
+        Example:
+            ```python
+            builder.build(
+                fields=["name", {"posts": ["title"]}],
+                filter={"age": {"gt": 18}},
+                sort=["-name"],
+                limit=10,
+                offset=0
+            )
+            ```
+        """
+        return (
+            self.apply_select(select)
+            .apply_filter(filter)
+            .apply_sort(sort)
+            .apply_limit(limit)
+            .apply_offset(offset)
+        )
+
+    def fetch(self, db: Session, model: type[T]) -> list[T]:
+        """Execute the query and return the results.
+
+        Args:
+            db (Session): The SQLModel database session.
+            model (type[T]): The SQLModel model class to query.
+
+        Returns:
+            list[T]: A list of model instances matching the query parameters.
+        """
+        results = db.exec(self.query).all()
+        return self.reconstruct_objects(cast(list[tuple[Any, ...]], results), model)
+
+    def reconstruct_objects(
+        self, results: list[tuple[Any, ...]], model: type[T]
+    ) -> list[T]:
+        """Reconstruct model instances from query results.
+
+        Args:
+            results (list[tuple[Any, ...]]): List of query result rows.
+
+        Returns:
+            list[T]: List of reconstructed model instances.
+        """
+        reconstructed: list[T] = []
+
+        for row in results:
+            field_idx = [0]
+            obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
+            reconstructed.append(obj)
+
+        return reconstructed
+
+    def exec(self, db: Session) -> list[tuple[Any, ...]]:
+        """Execute the query and return raw results.
+
+        Args:
+            db (Session): The SQLModel database session.
+
+        Returns:
+            list[tuple[Any, ...]]: Raw query results.
+        """
+        return db.exec(self.query).unique().all()  # type: ignore
 
     def reconstruct_object(
         self,
@@ -359,89 +415,3 @@ class QueryBuilder:
         for relation_name, rel_objs in related_objs.items():
             setattr(obj, relation_name, rel_objs)
         return obj, field_idx
-
-    def reconstruct_objects(
-        self, results: list[tuple[Any, ...]], model: type[T]
-    ) -> list[T]:
-        """Reconstruct model instances from query results.
-
-        Args:
-            results (list[tuple[Any, ...]]): List of query result rows.
-
-        Returns:
-            list[T]: List of reconstructed model instances.
-        """
-        reconstructed: list[T] = []
-
-        for row in results:
-            field_idx = [0]
-            obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
-            reconstructed.append(obj)
-
-        return reconstructed
-
-    def build(
-        self,
-        select: list[str | dict[str, list[str]]] | None = None,
-        filter: dict[str, Any] | None = None,
-        sort: list[str] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> "QueryBuilder":
-        """Build a complete query with all parameters.
-
-        This method combines field selection, filtering, sorting, and pagination
-        into a single method call.
-
-        Args:
-            fields (list[str | dict[str, list[str]]] | None): Fields to select.
-            filter (dict[str, Any] | None): Filter conditions.
-            sort (list[str] | None): Sort parameters.
-            limit (int | None): Maximum number of records.
-            offset (int | None): Number of records to skip.
-
-        Returns:
-            QueryBuilder: The query builder instance for method chaining.
-
-        Example:
-            ```python
-            builder.build(
-                fields=["name", {"posts": ["title"]}],
-                filter={"age": {"gt": 18}},
-                sort=["-name"],
-                limit=10,
-                offset=0
-            )
-            ```
-        """
-        return (
-            self.apply_select(select)
-            .apply_filter(filter)
-            .apply_sort(sort)
-            .apply_limit(limit)
-            .apply_offset(offset)
-        )
-
-    def exec(self, db: Session) -> list[tuple[Any, ...]]:
-        """Execute the query and return raw results.
-
-        Args:
-            db (Session): The SQLModel database session.
-
-        Returns:
-            list[tuple[Any, ...]]: Raw query results.
-        """
-        return db.exec(self.query).unique().all()  # type: ignore
-
-    def fetch(self, db: Session, model: type[T]) -> list[T]:
-        """Execute the query and return model instances.
-
-        This method combines query execution with object reconstruction.
-
-        Args:
-            db (Session): The SQLModel database session.
-
-        Returns:
-            list[T]: List of model instances.
-        """
-        return self.reconstruct_objects(self.exec(db), model)

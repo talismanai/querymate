@@ -5,6 +5,8 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlmodel import SQLModel
 
+from querymate.core.config import settings
+
 T = TypeVar("T")
 
 # ----------------------------
@@ -46,60 +48,67 @@ class Predicate(ABC):
 
 
 # ----------------------------
-# OPERATOR IMPLEMENTATIONS
+# PREDICATE IMPLEMENTATIONS
 # ----------------------------
 
 
-class EqPredicate(Predicate):
-    """Equal to operator (==)."""
+class EqualPredicate(Predicate):
+    """Equal to predicate."""
+
     name = "eq"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column == value
 
 
-class NePredicate(Predicate):
-    """Not equal to operator (!=)."""
+class NotEqualPredicate(Predicate):
+    """Not equal to predicate."""
+
     name = "ne"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column != value
 
 
-class GtPredicate(Predicate):
-    """Greater than operator (>)."""
+class GreaterThanPredicate(Predicate):
+    """Greater than predicate."""
+
     name = "gt"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column > value
 
 
-class GePredicate(Predicate):
-    """Greater than or equal to operator (>=)."""
-    name = "ge"
+class LessThanPredicate(Predicate):
+    """Less than predicate."""
 
-    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
-        return column >= value
-
-
-class LtPredicate(Predicate):
-    """Less than operator (<)."""
     name = "lt"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column < value
 
 
-class LePredicate(Predicate):
-    """Less than or equal to operator (<=)."""
-    name = "le"
+class GreaterThanOrEqualPredicate(Predicate):
+    """Greater than or equal to predicate."""
+
+    name = "gte"
+
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
+        return column >= value
+
+
+class LessThanOrEqualPredicate(Predicate):
+    """Less than or equal to predicate."""
+
+    name = "lte"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column <= value
 
 
-class ContPredicate(Predicate):
-    """Contains operator for string fields."""
+class ContainsPredicate(Predicate):
+    """Contains predicate for string fields."""
+
     name = "cont"
 
     def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
@@ -107,51 +116,57 @@ class ContPredicate(Predicate):
 
 
 class StartsWithPredicate(Predicate):
-    """Starts with operator for string fields."""
+    """Starts with predicate for string fields."""
+
     name = "starts_with"
 
-    def apply(self, column: InstrumentedAttribute, value: str) -> Any:
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column.startswith(value)
 
 
 class EndsWithPredicate(Predicate):
-    """Ends with operator for string fields."""
+    """Ends with predicate for string fields."""
+
     name = "ends_with"
 
-    def apply(self, column: InstrumentedAttribute, value: str) -> Any:
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column.endswith(value)
 
 
 class InPredicate(Predicate):
-    """In operator for checking if a value is in a list."""
+    """In list predicate."""
+
     name = "in"
 
-    def apply(self, column: InstrumentedAttribute, value: list[T]) -> Any:
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
         return column.in_(value)
 
 
 class NotInPredicate(Predicate):
-    """Not in operator for checking if a value is not in a list."""
-    name = "not_in"
+    """Not in list predicate."""
 
-    def apply(self, column: InstrumentedAttribute, value: list[Any]) -> Any:
-        return ~column.in_(value)
+    name = "nin"
+
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
+        return column.not_in(value)
 
 
 class IsNullPredicate(Predicate):
-    """Is null operator for checking if a value is null."""
+    """Is null predicate."""
+
     name = "is_null"
 
-    def apply(self, column: InstrumentedAttribute, value: bool) -> Any:
-        return column.is_(None) if value else column.is_not(None)
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
+        return column.is_(None)
 
 
 class IsNotNullPredicate(Predicate):
-    """Is not null operator for checking if a value is not null."""
+    """Is not null predicate."""
+
     name = "is_not_null"
 
-    def apply(self, column: InstrumentedAttribute, value: bool) -> Any:
-        return column.is_not(None) if value else column.is_(None)
+    def apply(self, column: InstrumentedAttribute, value: Any) -> Any:
+        return column.is_not(None)
 
 
 # ----------------------------
@@ -250,10 +265,10 @@ class FilterBuilder:
         return self._parse(self.model, filters_dict)
 
     def _parse(self, model: type[SQLModel], filters_dict: dict) -> list[Any]:
-        """Parse a filter dictionary recursively.
+        """Parse a filter dictionary into SQLAlchemy expressions.
 
         Args:
-            model (type[SQLModel]): The current model being filtered.
+            model (type[SQLModel]): The SQLModel class to parse filters for.
             filters_dict (dict): The filter dictionary to parse.
 
         Returns:
@@ -262,25 +277,23 @@ class FilterBuilder:
         Raises:
             ValueError: If an unsupported operator is used.
         """
-        filters = []
+        filters: list[Any] = []
 
-        for key, value in filters_dict.items():
-            if key == "and":
-                and_clauses = [self._parse(model, sub_filter) for sub_filter in value]
-                filters.append(
-                    and_(*[item for sublist in and_clauses for item in sublist])
-                )
-            elif key == "or":
-                or_clauses = [self._parse(model, sub_filter) for sub_filter in value]
-                filters.append(
-                    or_(*[item for sublist in or_clauses for item in sublist])
-                )
+        for field, condition in filters_dict.items():
+            if field == "and":
+                filters.append(and_(*self._parse(model, condition)))
+            elif field == "or":
+                filters.append(or_(*self._parse(model, condition)))
             else:
-                column = self.resolver.resolve(model, key)
-                for op_key, op_val in value.items():
-                    predicate_cls = Predicate.registry.get(op_key)
-                    if not predicate_cls:
-                        raise ValueError(f"Unsupported operator: {op_key}")
-                    filters.append(predicate_cls().apply(column, op_val))
+                column = self.resolver.resolve(model, field)
+                if isinstance(condition, dict):
+                    for operator, value in condition.items():
+                        if operator not in settings.FILTER_OPERATORS:
+                            raise ValueError(f"Unsupported operator: {operator}")
+                        predicate = Predicate.registry[operator]()
+                        filters.append(predicate.apply(column, value))
+                else:
+                    # Default to equality if no operator is specified
+                    filters.append(column == condition)
 
         return filters
