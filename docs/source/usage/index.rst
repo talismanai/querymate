@@ -12,6 +12,7 @@ This guide covers the main features and usage patterns of QueryMate.
    field_selection
    relationships
    serialization
+   predicates
 
 Basic Usage
 ----------
@@ -70,20 +71,20 @@ QueryMate accepts query parameters in JSON format through the ``q`` parameter. T
 .. code-block:: json
 
     {
-        "q": {
+        "filter": {
             "field": {"operator": "value"}
         },
         "sort": ["-field1", "field2"],
         "limit": 10,
         "offset": 0,
-        "fields": ["field1", "field2", {"relationship": ["field1", "field2"]}]
+        "select": ["field1", "field2", {"relationship": ["field1", "field2"]}]
     }
 
 For example:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"fields":["id","name",{"posts":["title"]}]}
+    /users?q={"filter":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"select":["id","name",{"posts":["title"]}]}
 
 Serialization
 ------------

@@ -33,10 +33,10 @@ Basic Usage
    .. code-block:: text
 
        # Select user fields and related post fields (returns serialized results)
-       /users?q={"fields":["id","name",{"posts":["title"]}]}
+       /users?q={"select":["id","name",{"posts":["title"]}]}
 
        # Filter by related field
-       /users?q={"q":{"posts.title":{"cont":"Python"}}}
+       /users?q={"filter":{"posts.title":{"cont":"Python"}}}
 
        # Sort by related field
        /users?q={"sort":["posts.title"]}

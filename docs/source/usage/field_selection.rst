@@ -11,7 +11,7 @@ To select specific fields, use the ``fields`` parameter in your query:
 .. code-block:: json
 
     {
-        "fields": ["field1", "field2"]
+        "select": ["field1", "field2"]
     }
 
 Examples
@@ -21,7 +21,7 @@ Select specific fields:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name","email"]}
+    /users?q={"select":["id","name","email"]}
 
 Related Fields
 ------------
@@ -31,7 +31,7 @@ You can select fields from related models using nested objects. The serializatio
 .. code-block:: json
 
     {
-        "fields": [
+        "select": [
             "id",
             "name",
             {"posts": ["id", "title"]}
@@ -42,7 +42,7 @@ Example with relationships:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name",{"posts":["title","content"]}]}
+    /users?q={"select":["id","name",{"posts":["title","content"]}]}
 
 Serialization Behavior
 -------------------

@@ -50,7 +50,7 @@ Filter by age:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18}}}
+    /users?q={"filter":{"age":{"gt":18}}}
 
 Sort by name (descending):
 
@@ -68,13 +68,13 @@ Select specific fields:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name","email"]}
+    /users?q={"select":["id","name","email"]}
 
 Combine multiple operations:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"fields":["id","name"]}
+    /users?q={"fil":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"select":["id","name"]}
 
 Working with Relationships
 -----------------------
@@ -99,10 +99,10 @@ Working with Relationships
    .. code-block:: text
 
        # Select user fields and related post fields
-       /users?q={"fields":["id","name",{"posts":["title"]}]}
+       /users?q={"select":["id","name",{"posts":["title"]}]}
 
        # Filter by related field
-       /users?q={"q":{"posts.title":{"cont":"Python"}}}
+       /users?q={"fil":{"posts.title":{"cont":"Python"}}}
 
        # Sort by related field
        /users?q={"sort":["posts.title"]}

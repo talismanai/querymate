@@ -49,7 +49,7 @@ You can combine pagination with filtering and sorting:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0}
+    /users?q={"filter":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0}
 
 Best Practices
 ------------

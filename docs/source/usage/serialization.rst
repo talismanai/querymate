@@ -147,13 +147,13 @@ You can control serialization through query parameters:
 .. code-block:: text
 
     # Select specific fields
-    /users?q={"fields":["id","name"]}
+    /users?q={"select":["id","name"]}
 
     # Select fields with relationships
-    /users?q={"fields":["id","name",{"posts":["title"]}]}
+    /users?q={"select":["id","name",{"posts":["title"]}]}
 
     # Complex selection with multiple relationships
-    /users?q={"fields":["id","name",{"posts":["title",{"comments":["content"]}]}]}
+    /users?q={"select":["id","name",{"posts":["title",{"comments":["content"]}]}]}
 
 Best Practices
 ------------
