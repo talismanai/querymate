@@ -1,6 +1,6 @@
 [project]
 name = "querymate"
-version = "0.3.1"
+version = "0.3.2"
 description = "A structured query builder for FastAPI and SQLModel"
 dependencies = [ "fastapi>=0.109.0", "sqlmodel>=0.0.14", "pydantic>=2.6.0", "pydantic-settings>=2.1.0", "sqlalchemy>=2.0.0", "ipdb>=0.13.13",]
 requires-python = ">=3.11"
@@ -23,7 +23,6 @@ dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "i
 
 [tool.setuptools]
 packages = [ "querymate",]
-package-data = { querymate = [ "py.typed", ] }
 
 [tool.ruff]
 line-length = 88
@@ -55,6 +54,9 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
+
+[tool.setuptools.package-data]
+querymate = [ "py.typed",]
 
 [tool.ruff.lint]
 select = [ "E", "F", "I", "N", "UP", "B", "RUF",]
