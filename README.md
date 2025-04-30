@@ -80,7 +80,7 @@ app = FastAPI()
 @app.get("/users")
 <<<<<<< Updated upstream
 async def get_users(
-    query: QueryMate = Depends(QueryMate.fasapi_dependency),
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
 ||||||| Stash base
 async def get_users(
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
@@ -127,7 +127,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 @app.get("/users")
 async def get_users(
 <<<<<<< Updated upstream
-    query: QueryMate = Depends(QueryMate.fasapi_dependency),
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
     db: Session = Depends(get_db)
 ||||||| Stash base
     query: QueryMate = Depends(QueryMate.fastapi_dependency),

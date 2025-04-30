@@ -35,7 +35,7 @@ class Querymate(BaseModel):
         ```python
         @app.get("/users")
         def get_users(
-            query: QueryMate = Depends(QueryMate.fasapi_dependency),
+            query: QueryMate = Depends(QueryMate.fastapi_dependency),
             db: Session = Depends(get_db)
         ):
             return query.run(db, User)
@@ -101,7 +101,7 @@ class Querymate(BaseModel):
             raise ValueError("Invalid JSON in query parameter") from e
 
     @classmethod
-    def fasapi_dependency(cls, request: Request) -> "Querymate":
+    def fastapi_dependency(cls, request: Request) -> "Querymate":
         """FastAPI dependency for creating a QueryMate instance from a request.
 
         Args:

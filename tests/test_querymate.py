@@ -104,7 +104,7 @@ def test_from_qs() -> None:
     assert querymate.offset == 0
 
 
-def test_fasapi_dependency() -> None:
+def test_fastapi_dependency() -> None:
     querymate = Querymate(
         select=["id", "name"],
         filter={"age": {"gt": 25}},
@@ -116,7 +116,7 @@ def test_fasapi_dependency() -> None:
     request = Request(
         scope=dict(type="http", method="GET", path="/users", query_string=qs)
     )
-    querymate_dep = Querymate.fasapi_dependency(request)
+    querymate_dep = Querymate.fastapi_dependency(request)
     assert querymate_dep.select == querymate.select
     assert querymate_dep.filter == querymate.filter
     assert querymate_dep.sort == querymate.sort
@@ -181,14 +181,14 @@ def test_querymate_from_qs_with_complex_filters() -> None:
     }
 
 
-def test_fasapi_dependency_with_nested_filters(mock_request: Callable) -> None:
+def test_fastapi_dependency_with_nested_filters(mock_request: Callable) -> None:
     """Test Querymate dependency with nested filters."""
     request = mock_request(
         QueryParams(
             {"q": '{"filter": {"posts.title": {"cont": "Python"}, "age": {"gt": 18}}}'}
         )
     )
-    querymate = Querymate.fasapi_dependency(request)
+    querymate = Querymate.fastapi_dependency(request)
 
     assert querymate.filter == {"posts.title": {"cont": "Python"}, "age": {"gt": 18}}
 
