@@ -96,7 +96,7 @@ class Querymate(BaseModel):
         if not query:
             return cls()
         try:
-            return cls.model_validate(query)
+            return cls.model_validate(json.loads(query))
         except json.JSONDecodeError as e:
             raise ValueError("Invalid JSON in query parameter") from e
 
