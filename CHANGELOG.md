@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.12] - 2025-04-30
+
+### Patch Changes
+
+Fix versioning
+
 ## [0.3.11] - 2025-04-30
 
 ### Patch Changes
