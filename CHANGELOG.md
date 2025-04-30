@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.4] - 2025-04-30
+
+### Patch Changes
+
+Fix relationships
+
 ## [0.4.3] - 2025-04-30
 
 ### Patch Changes
