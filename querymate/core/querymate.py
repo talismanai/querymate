@@ -23,6 +23,8 @@ class Querymate(BaseModel):
 
     This class provides a flexible interface for building and executing database queries
     with support for filtering, sorting, pagination, and field selection.
+    It includes built-in serialization capabilities to transform query results into
+    dictionaries with only the requested fields.
 
     Attributes:
         select (list[FieldSelection] | None): Fields to include in the response. Default is all fields.
@@ -31,6 +33,11 @@ class Querymate(BaseModel):
         limit (int | None): Maximum number of records to return. Default is 10, max is 200.
         offset (int | None): Number of records to skip. Default is 0.
 
+    Serialization:
+        The Querymate class includes built-in serialization capabilities through the `run` and `run_async` methods.
+        These methods automatically serialize the results into dictionaries containing only the requested fields.
+        For raw model instances, use `run_raw` or `run_raw_async` instead.
+
     Example:
         ```python
         @app.get("/users")
@@ -38,7 +45,16 @@ class Querymate(BaseModel):
             query: QueryMate = Depends(QueryMate.fastapi_dependency),
             db: Session = Depends(get_db)
         ):
+            # Returns serialized results (dictionaries)
             return query.run(db, User)
+
+        @app.get("/users/raw")
+        def get_users_raw(
+            query: QueryMate = Depends(QueryMate.fastapi_dependency),
+            db: Session = Depends(get_db)
+        ):
+            # Returns raw model instances
+            return query.run_raw(db, User)
         ```
 
         Query example:
@@ -147,14 +163,22 @@ class Querymate(BaseModel):
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
-        to build and execute a database query.
+        to build and execute a database query. The results are automatically
+        serialized into dictionaries containing only the requested fields.
 
         Args:
             db (Session): The SQLModel database session.
             model (type[SQLModel]): The SQLModel model class to query.
 
         Returns:
-            list[dict[str, Any]]: A list of model instances matching the query parameters.
+            list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
+
+        Example:
+            ```python
+            querymate = Querymate(select=["id", "name"])
+            # Returns serialized results
+            results = querymate.run(db, User)
+            ```
         """
         query_builder = QueryBuilder(model=model)
         query_builder.build(
@@ -171,14 +195,22 @@ class Querymate(BaseModel):
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
-        to build and execute a database query asynchronously.
+        to build and execute a database query asynchronously. The results are automatically
+        serialized into dictionaries containing only the requested fields.
 
         Args:
             db (AsyncSession): The SQLModel async database session.
             model (type[SQLModel]): The SQLModel model class to query.
 
         Returns:
-            list[dict[str, Any]]: A list of model instances matching the query parameters.
+            list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
+
+        Example:
+            ```python
+            querymate = Querymate(select=["id", "name"])
+            # Returns serialized results
+            results = await querymate.run_async(db, User)
+            ```
         """
         query_builder = QueryBuilder(model=model)
         query_builder.build(

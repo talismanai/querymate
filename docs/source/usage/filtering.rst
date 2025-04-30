@@ -11,7 +11,7 @@ To filter results, use the ``q`` parameter in your query with the following stru
 .. code-block:: json
 
     {
-        "q": {
+        "filter": {
             "field": {"operator": "value"}
         }
     }
@@ -42,37 +42,37 @@ Equal to:
 
 .. code-block:: text
 
-    /users?q={"q":{"name":{"eq":"John"}}}
+    /users?q={"filter":{"name":{"eq":"John"}}}
 
 Greater than:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18}}}
+    /users?q={"filter":{"age":{"gt":18}}}
 
 Multiple conditions:
 
 .. code-block:: text
 
-    /users?q={"q":{"age":{"gt":18},"name":{"starts_with":"J"}}}
+    /users?q={"filter":{"age":{"gt":18},"name":{"starts_with":"J"}}}
 
 In list:
 
 .. code-block:: text
 
-    /users?q={"q":{"status":{"in":["active","pending"]}}}
+    /users?q={"filter":{"status":{"in":["active","pending"]}}}
 
 Contains:
 
 .. code-block:: text
 
-    /users?q={"q":{"email":{"cont":"@gmail.com"}}}
+    /users?q={"filter":{"email":{"cont":"@gmail.com"}}}
 
 Null check:
 
 .. code-block:: text
 
-    /users?q={"q":{"deleted_at":{"is_null":true}}}
+    /users?q={"filter":{"deleted_at":{"is_null":true}}}
 
 Relationship Filtering
 -------------------
@@ -81,4 +81,4 @@ You can also filter on related models:
 
 .. code-block:: text
 
-    /users?q={"q":{"posts.title":{"cont":"Python"}}} 
+    /users?q={"filter":{"posts.title":{"cont":"Python"}}} 

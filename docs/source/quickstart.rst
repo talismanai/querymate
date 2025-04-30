@@ -1,137 +1,19 @@
-Quick Start Guide
-===============
+Quickstart
+=========
 
-This guide will help you get started with QueryMate quickly.
+QueryMate is a powerful query builder for FastAPI and SQLModel that provides a flexible interface for building and executing database queries with support for filtering, sorting, pagination, and field selection. It includes built-in serialization capabilities to transform query results into dictionaries containing only the requested fields.
 
-Basic Setup
-----------
+Installation
+-----------
 
-1. First, install QueryMate:
+.. code-block:: bash
 
-   .. code-block:: bash
-
-       pip install querymate
-
-   For async support, you'll also need to install the appropriate async database driver:
-
-   .. code-block:: bash
-
-       # For SQLite
-       pip install aiosqlite
-
-       # For PostgreSQL
-       pip install asyncpg
-
-       # For MySQL
-       pip install aiomysql
-
-2. Define your SQLModel:
-
-   .. code-block:: python
-
-       from sqlmodel import SQLModel, Field
-
-       class User(SQLModel, table=True):
-           id: int = Field(primary_key=True)
-           name: str
-           email: str
-           age: int
-
-3. Set up FastAPI with QueryMate (Synchronous):
-
-   .. code-block:: python
-
-       from fastapi import FastAPI, Depends
-       from sqlmodel import Session
-       from querymate import QueryMate
-
-       app = FastAPI()
-
-       @app.get("/users")
-       def get_users(
-           query: QueryMate = Depends(QueryMate.fastapi_dependency),
-           db: Session = Depends(get_db)
-       ):
-           return query.run(db, User)
-
-4. Set up FastAPI with QueryMate (Asynchronous):
-
-   .. code-block:: python
-
-       from fastapi import FastAPI, Depends
-       from sqlmodel.ext.asyncio.session import AsyncSession
-       from sqlalchemy.ext.asyncio import create_async_engine
-       from sqlalchemy.orm import sessionmaker
-       from querymate import QueryMate
-
-       app = FastAPI()
-
-       # Create async database engine
-       engine = create_async_engine("sqlite+aiosqlite:///example.db")
-
-       # Create async session factory
-       async_session = sessionmaker(
-           engine,
-           class_=AsyncSession,
-           expire_on_commit=False,
-           autocommit=False,
-           autoflush=False,
-       )
-
-       # Database dependency
-       async def get_db() -> AsyncGenerator[AsyncSession, None]:
-           async with async_session() as session:
-               try:
-                   yield session
-               finally:
-                   await session.close()
-
-       @app.get("/users")
-       async def get_users(
-           query: QueryMate = Depends(QueryMate.fastapi_dependency),
-           db: AsyncSession = Depends(get_db)
-       ):
-           return await query.run_async(db, User)
+    pip install querymate
 
 Basic Usage
 ----------
 
-Here are some common query examples:
-
-Filter by age:
-
-.. code-block:: text
-
-    /users?q={"q":{"age":{"gt":18}}}
-
-Sort by name (descending):
-
-.. code-block:: text
-
-    /users?q={"sort":["-name"]}
-
-Paginate results:
-
-.. code-block:: text
-
-    /users?q={"limit":10,"offset":0}
-
-Select specific fields:
-
-.. code-block:: text
-
-    /users?q={"fields":["id","name","email"]}
-
-Combine multiple operations:
-
-.. code-block:: text
-
-    /users?q={"q":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"fields":["id","name"]}
-
-Working with Relationships
------------------------
-
-1. Define models with relationships:
+1. Define your models:
 
    .. code-block:: python
 
@@ -150,14 +32,46 @@ Working with Relationships
 
    .. code-block:: text
 
-       # Select user fields and related post fields
-       /users?q={"fields":["id","name",{"posts":["title"]}]}
+       # Select user fields and related post fields (returns serialized results)
+       /users?q={"select":["id","name",{"posts":["title"]}]}
 
        # Filter by related field
-       /users?q={"q":{"posts.title":{"cont":"Python"}}}
+       /users?q={"filter":{"posts.title":{"cont":"Python"}}}
 
        # Sort by related field
        /users?q={"sort":["posts.title"]}
+
+3. Using the QueryMate class:
+
+   .. code-block:: python
+
+       @app.get("/users")
+       def get_users(
+           query: QueryMate = Depends(QueryMate.fastapi_dependency),
+           db: Session = Depends(get_db)
+       ):
+           # Returns serialized results (dictionaries)
+           return query.run(db, User)
+
+       @app.get("/users/raw")
+       def get_users_raw(
+           query: QueryMate = Depends(QueryMate.fastapi_dependency),
+           db: Session = Depends(get_db)
+       ):
+           # Returns raw model instances
+           return query.run_raw(db, User)
+
+Serialization
+------------
+
+QueryMate automatically serializes query results into dictionaries containing only the requested fields. This helps reduce payload size and improve performance. The serialization process supports:
+
+* Direct field selection
+* Nested relationships
+* Both list and non-list relationships
+* Automatic handling of null values
+
+For raw model instances, use the `run_raw` or `run_raw_async` methods instead.
 
 Next Steps
 ---------

@@ -1,7 +1,7 @@
 Field Selection
 ==============
 
-QueryMate allows you to select specific fields to return in the response, helping to reduce payload size and improve performance.
+QueryMate allows you to select specific fields to return in the response, helping to reduce payload size and improve performance. The selected fields are automatically serialized into dictionaries containing only the requested fields.
 
 Basic Field Selection
 ------------------
@@ -11,7 +11,7 @@ To select specific fields, use the ``fields`` parameter in your query:
 .. code-block:: json
 
     {
-        "fields": ["field1", "field2"]
+        "select": ["field1", "field2"]
     }
 
 Examples
@@ -21,17 +21,17 @@ Select specific fields:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name","email"]}
+    /users?q={"select":["id","name","email"]}
 
 Related Fields
 ------------
 
-You can select fields from related models using nested objects:
+You can select fields from related models using nested objects. The serialization process will automatically handle both list and non-list relationships:
 
 .. code-block:: json
 
     {
-        "fields": [
+        "select": [
             "id",
             "name",
             {"posts": ["id", "title"]}
@@ -42,7 +42,18 @@ Example with relationships:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name",{"posts":["title","content"]}]}
+    /users?q={"select":["id","name",{"posts":["title","content"]}]}
+
+Serialization Behavior
+-------------------
+
+* Results are automatically serialized into dictionaries containing only the requested fields
+* For raw model instances, use the `run_raw` or `run_raw_async` methods
+* Serialization supports:
+  - Direct field selection
+  - Nested relationships
+  - Both list and non-list relationships
+  - Automatic handling of null values
 
 Default Behavior
 -------------

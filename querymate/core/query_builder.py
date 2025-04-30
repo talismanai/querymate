@@ -29,6 +29,8 @@ class QueryBuilder:
 
     This class provides methods for building SQL queries with support for field selection,
     filtering, sorting, and pagination. It handles relationships and nested queries.
+    It also includes built-in serialization capabilities to transform query results into
+    dictionaries with only the requested fields.
 
     Attributes:
         model (type[T]): The SQLModel model class to query.
@@ -38,6 +40,30 @@ class QueryBuilder:
         sort (list[str]): List of fields to sort by.
         limit (int | None): Maximum number of records to return.
         offset (int | None): Number of records to skip.
+
+    Serialization:
+        The QueryBuilder includes built-in serialization capabilities through the `serialize` method.
+        This allows you to transform query results into dictionaries containing only the requested fields.
+        Serialization supports:
+        - Direct field selection
+        - Nested relationships
+        - Both list and non-list relationships
+        - Automatic handling of null values
+
+    Example:
+        ```python
+        # Basic usage
+        query_builder = QueryBuilder(model=User)
+        query_builder.apply_select(["id", "name"])
+        results = query_builder.fetch(db, User)
+        serialized = query_builder.serialize(results)
+
+        # With relationships
+        query_builder = QueryBuilder(model=User)
+        query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+        results = query_builder.fetch(db, User)
+        serialized = query_builder.serialize(results)
+        ```
     """
 
     model: type[SQLModel]
@@ -377,12 +403,25 @@ class QueryBuilder:
     def fetch(self, db: Session, model: type[T]) -> list[T]:
         """Execute the query and return the results.
 
+        This method executes the query and returns the raw model instances.
+        For serialized results (dictionaries with only the requested fields),
+        use the `serialize` method after fetching.
+
         Args:
             db (Session): The SQLModel database session.
             model (type[T]): The SQLModel model class to query.
 
         Returns:
             list[T]: A list of model instances matching the query parameters.
+
+        Example:
+            ```python
+            query_builder = QueryBuilder(model=User)
+            query_builder.apply_select(["id", "name"])
+            results = query_builder.fetch(db, User)
+            # For serialized results:
+            serialized = query_builder.serialize(results)
+            ```
         """
         results = db.exec(self.query).all()
         return self.reconstruct_objects(cast(list[tuple[Any, ...]], results), model)
@@ -495,12 +534,25 @@ class QueryBuilder:
     async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
         """Execute the query asynchronously and return the results.
 
+        This method executes the query asynchronously and returns the raw model instances.
+        For serialized results (dictionaries with only the requested fields),
+        use the `serialize` method after fetching.
+
         Args:
             db (AsyncSession): The SQLModel async database session.
             model (type[T]): The SQLModel model class to query.
 
         Returns:
             list[T]: A list of model instances matching the query parameters.
+
+        Example:
+            ```python
+            query_builder = QueryBuilder(model=User)
+            query_builder.apply_select(["id", "name"])
+            results = await query_builder.fetch_async(db, User)
+            # For serialized results:
+            serialized = query_builder.serialize(results)
+            ```
         """
         results = await db.execute(self.query)
         return self.reconstruct_objects(

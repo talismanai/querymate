@@ -30,7 +30,7 @@ You can include related fields in your queries using nested field selection:
 
 .. code-block:: text
 
-    /users?q={"fields":["id","name",{"posts":["title"]}]}
+    /users?q={"select":["id","name",{"posts":["title"]}]}
 
 Filtering by Related Fields
 ------------------------
@@ -39,7 +39,7 @@ Filter records based on related field values:
 
 .. code-block:: text
 
-    /users?q={"q":{"posts.title":{"cont":"Python"}}}
+    /users?q={"filter":{"posts.title":{"cont":"Python"}}}
 
 Sorting by Related Fields
 ----------------------
@@ -57,7 +57,7 @@ QueryMate supports multiple levels of relationships:
 
 .. code-block:: text
 
-    /users?q={"fields":["id",{"posts":["title",{"comments":["content"]}]}]}
+    /users?q={"select":["id",{"posts":["title",{"comments":["content"]}]}]}
 
 Best Practices
 ------------
