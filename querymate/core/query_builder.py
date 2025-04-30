@@ -2,6 +2,7 @@ from logging import getLogger
 from typing import Any, TypeVar, cast
 
 from sqlalchemy import Join
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.orm.relationships import RelationshipProperty
@@ -413,3 +414,30 @@ class QueryBuilder:
         for relation_name, rel_objs in related_objs.items():
             setattr(obj, relation_name, rel_objs)
         return obj, field_idx
+
+    async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+        """Execute the query asynchronously and return the results.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+            model (type[T]): The SQLModel model class to query.
+
+        Returns:
+            list[T]: A list of model instances matching the query parameters.
+        """
+        results = await db.execute(self.query)
+        return self.reconstruct_objects(
+            cast(list[tuple[Any, ...]], results.all()), model
+        )
+
+    async def exec_async(self, db: AsyncSession) -> list[tuple[Any, ...]]:
+        """Execute the query asynchronously and return raw results.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+
+        Returns:
+            list[tuple[Any, ...]]: Raw query results.
+        """
+        results = await db.execute(self.query)
+        return results.unique().all()  # type: ignore

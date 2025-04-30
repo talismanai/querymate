@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 from fastapi import Request
 from fastapi.datastructures import QueryParams
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
 from querymate.core.config import settings
@@ -26,7 +27,7 @@ class Querymate(BaseModel):
     Attributes:
         select (list[FieldSelection] | None): Fields to include in the response. Default is all fields.
         filter (FilterCondition | None): Filter conditions for the query. Default is {}.
-        sort (list[str] | None): l of fields to sort by. Prefix with "-" for descending order. Default is [].
+        sort (list[str] | None): List of fields to sort by. Prefix with "-" for descending order. Default is [].
         limit (int | None): Maximum number of records to return. Default is 10, max is 200.
         offset (int | None): Number of records to skip. Default is 0.
 
@@ -42,7 +43,7 @@ class Querymate(BaseModel):
 
         Query example:
         ```
-        /users?q={"q":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"fields":["id","name"]}
+        /users?q={"filter":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"select":["id","name"]}
         ```
     """
 
@@ -141,3 +142,26 @@ class Querymate(BaseModel):
             offset=self.offset,
         )
         return query_builder.fetch(db, model)
+
+    async def run_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+        """Build and execute the query asynchronously based on the parameters.
+
+        This method combines filtering, sorting, pagination, and field selection
+        to build and execute a database query asynchronously.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+            model (type[SQLModel]): The SQLModel model class to query.
+
+        Returns:
+            list[SQLModel]: A list of model instances matching the query parameters.
+        """
+        query_builder = QueryBuilder(model=model)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self.limit,
+            offset=self.offset,
+        )
+        return await query_builder.fetch_async(db, model)

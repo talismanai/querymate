@@ -13,6 +13,7 @@
 - ✅ Pagination (limit/offset)
 - ✅ Field selection
 - ✅ Query parameter parsing
+- ✅ Async database support
 
 Built for teams that want to build robust APIs with FastAPI and SQLModel.
 
@@ -28,6 +29,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 📄 Pagination                 | Limit and offset support for efficient data retrieval                      |
 | 🎨 Field Selection            | Select specific fields to return                                           |
 | 🏗️ Query Building             | Build SQL queries programmatically                                         |
+| ⚡ Async Support              | Full support for async database operations                                 |
 
 ---
 
@@ -37,6 +39,19 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 
 ```bash
 pip install querymate
+```
+
+For async support, you'll also need to install the appropriate async database driver:
+
+```bash
+# For SQLite
+pip install aiosqlite
+
+# For PostgreSQL
+pip install asyncpg
+
+# For MySQL
+pip install aiomysql
 ```
 
 ### Basic Usage
@@ -53,7 +68,7 @@ class User(SQLModel, table=True):
     age: int
 ```
 
-2. Use QueryMate in your FastAPI route:
+2. Use QueryMate in your FastAPI route (Synchronous):
 
 ```python
 from fastapi import FastAPI, Depends
@@ -63,27 +78,82 @@ from querymate import QueryMate
 app = FastAPI()
 
 @app.get("/users")
+<<<<<<< Updated upstream
 async def get_users(
     query: QueryMate = Depends(QueryMate.querymate_dependency),
+||||||| Stash base
+async def get_users(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+=======
+def get_users(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+>>>>>>> Stashed changes
     db: Session = Depends(get_db)
 ):
     return query.run(db, User)
+```
+
+3. Use QueryMate with Async Database (Asynchronous):
+
+```python
+from fastapi import FastAPI, Depends
+from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.orm import sessionmaker
+from querymate import QueryMate
+
+app = FastAPI()
+
+# Create async database engine
+engine = create_async_engine("sqlite+aiosqlite:///example.db")
+
+# Create async session factory
+async_session = sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+# Database dependency
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+@app.get("/users")
+async def get_users(
+<<<<<<< Updated upstream
+    query: QueryMate = Depends(QueryMate.querymate_dependency),
+    db: Session = Depends(get_db)
+||||||| Stash base
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: Session = Depends(get_db)
+=======
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: AsyncSession = Depends(get_db)
+):
+    return await query.run_async(db, User)
 ```
 
 ### Advanced Usage
 
 ```python
 # Example query parameters
-# ?q={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
+# ?q={"filter": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "select": ["id", "name"]}
 
 @app.get("/users")
 async def get_users(
-    query: QueryMate = Depends(QueryMate.querymate_dependency),
-    db: Session = Depends(get_db)
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: AsyncSession = Depends(get_db)
+>>>>>>> Stashed changes
 ):
     # The query will be built and executed automatically
     # Results will be serialized according to the fields
-    return query.run(db, User)
+    return await query.run_async(db, User)
 ```
 
 ---
