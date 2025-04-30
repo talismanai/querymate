@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0] - 2025-04-30
+
+### Minor Changes
+
+Serialization and documentation
+
 ## [0.4.4] - 2025-04-30
 
 ### Patch Changes
