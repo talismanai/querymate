@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.10] - 2025-04-30
+
+### Patch Changes
+
+Fix documentation version
+
 ## [0.3.9] - 2025-04-30
 
 ### Patch Changes
