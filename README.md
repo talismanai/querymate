@@ -78,16 +78,8 @@ from querymate import QueryMate
 app = FastAPI()
 
 @app.get("/users")
-<<<<<<< Updated upstream
-async def get_users(
-    query: QueryMate = Depends(QueryMate.fasapi_dependency),
-||||||| Stash base
-async def get_users(
-    query: QueryMate = Depends(QueryMate.fastapi_dependency),
-=======
 def get_users(
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
->>>>>>> Stashed changes
     db: Session = Depends(get_db)
 ):
     return query.run(db, User)
@@ -126,13 +118,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @app.get("/users")
 async def get_users(
-<<<<<<< Updated upstream
-    query: QueryMate = Depends(QueryMate.fasapi_dependency),
-    db: Session = Depends(get_db)
-||||||| Stash base
-    query: QueryMate = Depends(QueryMate.fastapi_dependency),
-    db: Session = Depends(get_db)
-=======
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
     db: AsyncSession = Depends(get_db)
 ):
@@ -149,7 +134,6 @@ async def get_users(
 async def get_users(
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
     db: AsyncSession = Depends(get_db)
->>>>>>> Stashed changes
 ):
     # The query will be built and executed automatically
     # Results will be serialized according to the fields
