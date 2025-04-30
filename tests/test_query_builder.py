@@ -1,9 +1,17 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import Engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    create_async_engine,
+)
+from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine, desc, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
 from querymate.core.query_builder import QueryBuilder
@@ -28,6 +36,30 @@ def engine() -> Engine:
 @pytest.fixture
 def db(engine: Engine) -> Generator[Session, None, None]:
     with Session(engine) as session:
+        yield session
+
+
+@pytest.fixture
+async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    yield engine
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.fixture
+async def async_db(async_engine: Any) -> AsyncGenerator[AsyncSession, None]:
+    async_session = sessionmaker(
+        async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with async_session() as session:  # type: ignore
         yield session
 
 
@@ -422,3 +454,61 @@ def test_reconstruct_object_with_invalid_relationship() -> None:
     builder = QueryBuilder(User)
     with pytest.raises(KeyError):
         builder.reconstruct_object(User, [{"invalid_relationship": ["field"]}], (), [0])
+
+
+def test_relationship_types(db: Session) -> None:
+    """Test that both to-one and to-many relationships are handled correctly."""
+    # Create test data
+    user = User(id=1, name="John", email="john@example.com", age=30)
+    post1 = Post(id=1, title="Post 1", content="Content 1", user_id=user.id)
+    post2 = Post(id=2, title="Post 2", content="Content 2", user_id=user.id)
+    user.posts = [post1, post2]
+    db.add(post1)
+    db.add(post2)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Test querying from User side (one-to-many)
+    user_builder = QueryBuilder(User)
+    user_results = user_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}]
+    ).fetch(db, User)
+
+    assert len(user_results) == 1
+    assert isinstance(user_results[0].posts, list)
+    assert len(user_results[0].posts) == 2
+    assert user_results[0].posts[0].title in ["Post 1", "Post 2"]
+    assert user_results[0].posts[1].title in ["Post 1", "Post 2"]
+
+    # Test querying from Post side (many-to-one)
+    post_builder = QueryBuilder(Post)
+    post_results = post_builder.apply_select(
+        ["id", "title", {"user": ["id", "name"]}]
+    ).fetch(db, Post)
+
+    assert len(post_results) == 2
+    for post in post_results:
+        assert not isinstance(post.user, list)  # type: ignore
+        assert post.user.name == "John"
+
+
+async def test_exec_async(async_db: AsyncSession) -> None:
+    post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
+    user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
+    user2 = User(id=2, name="Jane", email="jane@example.com", age=25, posts=[post2])
+
+    async_db.add(post1)
+    async_db.add(post2)
+    async_db.add(user1)
+    async_db.add(user2)
+    await async_db.commit()
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    results = await query_builder.exec_async(async_db)
+    assert results == [
+        (1, "John", 1, "Post 1"),
+        (2, "Jane", 2, "Post 2"),
+    ]
