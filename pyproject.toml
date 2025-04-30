@@ -23,6 +23,7 @@ dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "i
 
 [tool.setuptools]
 packages = [ "querymate",]
+package-data = { querymate = [ "py.typed", ] }
 
 [tool.ruff]
 line-length = 88
