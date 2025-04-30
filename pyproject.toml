@@ -19,7 +19,7 @@ Homepage = "https://github.com/banduk/querymate"
 Repository = "https://github.com/banduk/querymate"
 
 [project.optional-dependencies]
-dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "isort>=5.13.0", "mypy>=1.8.0", "sphinx>=7.2.0", "sphinx-rtd-theme>=2.0.0", "sphinx-autodoc-typehints>=1.25.0", "myst-parser>=2.0.0", "sphinx-copybutton>=0.5.0", "sphinx-design>=0.5.0", "furo>=2024.0.0", "httpx>=0.27.0",]
+dev = [ "pytest>=8.0.0", "pytest-cov>=4.1.0", "ruff>=0.2.0", "black>=24.1.0", "isort>=5.13.0", "mypy>=1.8.0", "sphinx>=7.2.0", "sphinx-rtd-theme>=2.0.0", "sphinx-autodoc-typehints>=1.25.0", "myst-parser>=2.0.0", "sphinx-copybutton>=0.5.0", "sphinx-design>=0.5.0", "furo>=2024.0.0", "httpx>=0.27.0", "tomli>=0.10.0",]
 
 [tool.setuptools]
 packages = [ "querymate",]
