@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1] - 2025-04-30
+
+### Patch Changes
+
+Rename dependency
+
 ## [0.4.0] - 2025-04-30
 
 ### Patch Changes
