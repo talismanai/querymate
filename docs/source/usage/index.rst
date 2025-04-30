@@ -39,7 +39,7 @@ Here's a complete example:
 
     @app.get("/users")
     async def get_users(
-        query: QueryMate = Depends(QueryMate.querymate_dependency),
+        query: QueryMate = Depends(QueryMate.fasapi_dependency),
         db: Session = Depends(get_db)
     ):
         return query.run(db, User)
