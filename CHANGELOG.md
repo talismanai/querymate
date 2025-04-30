@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.2] - 2025-04-30
+
+### Patch Changes
+
+Fix dependency
+
 ## [0.4.1] - 2025-04-30
 
 ### Patch Changes

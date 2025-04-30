@@ -1,6 +1,6 @@
 [project]
 name = "querymate"
-version = "0.4.1"
+version = "0.4.2"
 description = "A structured query builder for FastAPI and SQLModel"
 dependencies = [ "fastapi>=0.109.0", "sqlmodel>=0.0.14", "pydantic>=2.6.0", "pydantic-settings>=2.1.0", "sqlalchemy>=2.0.0", "greenlet>=3.0.0",]
 requires-python = ">=3.11"
