@@ -10,8 +10,15 @@ from pathlib import Path
 # Add the project root directory to the Python path
 sys.path.insert(0, os.path.abspath(".."))
 
-# Read version from pyproject.toml
+# Read version from environment variable or pyproject.toml
 def get_version():
+    # First try to get version from environment variable (used in CI/CD)
+    version = os.environ.get("QUERYMATE_VERSION")
+    if version:
+        print(f"Version read from environment variable: {version}")  # Debug print
+        return version
+        
+    # Fall back to reading from pyproject.toml
     try:
         import toml
         path = Path(__file__).parent.parent / "pyproject.toml"
