@@ -55,7 +55,7 @@ clean:
 # All checks
 all-checks: lint test-cov
 
-all: setup lint format test docs
+all: install lint format test docs
 
 # Default target
 .DEFAULT_GOAL := help
