@@ -13,11 +13,11 @@ sys.path.insert(0, os.path.abspath(".."))
 # Read version from pyproject.toml
 def get_version():
     try:
-        import tomli
-        with open(Path(__file__).parent.parent / "pyproject.toml", "rb") as f:
-            return tomli.load(f)["project"]["version"]
+        from toml import load
+        path = Path(__file__).parent.parent / "pyproject.toml"
+        return load(path)["project"]["version"]
     except ImportError:
-        return "0.3.2"  # Fallback to current version
+        return "0.3.5"  # Fallback to current version
 
 # -- Project information -----------------------------------------------------
 project = "QueryMate"
