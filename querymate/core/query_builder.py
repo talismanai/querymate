@@ -345,18 +345,40 @@ class QueryBuilder:
 
         Args:
             results (list[tuple[Any, ...]]): List of query result rows.
+            model (type[T]): The SQLModel model class.
 
         Returns:
             list[T]: List of reconstructed model instances.
         """
-        reconstructed: list[T] = []
+        reconstructed: dict[int, T] = {}  # Track objects by their ID
+        mapper: Mapper = inspect(model)
+
+        id_field = next(field for field in mapper.primary_key)
 
         for row in results:
             field_idx = [0]
             obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
-            reconstructed.append(obj)
 
-        return reconstructed
+            # Get the ID of the object
+            obj_id = getattr(obj, id_field.name)
+
+            if obj_id in reconstructed:
+                # If we've seen this object before, update its relationships
+                existing_obj = reconstructed[obj_id]
+                for relation_name in self.select:
+                    if isinstance(relation_name, dict):
+                        for rel_name in relation_name:
+                            existing_rels = getattr(existing_obj, rel_name)
+                            new_rels = getattr(obj, rel_name)
+                            # Add any new related objects that aren't already present
+                            for new_rel in new_rels:
+                                if new_rel not in existing_rels:
+                                    existing_rels.append(new_rel)
+            else:
+                # First time seeing this object, add it to our dictionary
+                reconstructed[obj_id] = obj
+
+        return list(reconstructed.values())
 
     def exec(self, db: Session) -> list[tuple[Any, ...]]:
         """Execute the query and return raw results.
@@ -412,7 +434,13 @@ class QueryBuilder:
 
         obj: T = model(**obj_kwargs)
         for relation_name, rel_objs in related_objs.items():
-            setattr(obj, relation_name, rel_objs)
+            relation = mapper.relationships[relation_name]
+            if relation.uselist:
+                # Many relationship (one-to-many or many-to-many)
+                setattr(obj, relation_name, rel_objs)
+            else:
+                # To-one relationship (one-to-one or many-to-one)
+                setattr(obj, relation_name, rel_objs[0] if rel_objs else None)
         return obj, field_idx
 
     async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
@@ -439,5 +467,7 @@ class QueryBuilder:
         Returns:
             list[tuple[Any, ...]]: Raw query results.
         """
+        # Note: We use execute() instead of exec() because exec() is not available
+        # for AsyncSession. This warning is more relevant for synchronous sessions.
         results = await db.execute(self.query)
         return results.unique().all()  # type: ignore

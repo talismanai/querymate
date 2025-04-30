@@ -53,9 +53,9 @@ clean:
 	rm -rf build
 
 # All checks
-all-checks: lint test-cov
+all-checks: format lint test-cov
 
-all: install lint format test docs
+all: install format lint test-cov
 
 # Default target
 .DEFAULT_GOAL := help
