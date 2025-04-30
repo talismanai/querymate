@@ -12,6 +12,19 @@ Basic Setup
 
        pip install querymate
 
+   For async support, you'll also need to install the appropriate async database driver:
+
+   .. code-block:: bash
+
+       # For SQLite
+       pip install aiosqlite
+
+       # For PostgreSQL
+       pip install asyncpg
+
+       # For MySQL
+       pip install aiomysql
+
 2. Define your SQLModel:
 
    .. code-block:: python
@@ -24,7 +37,7 @@ Basic Setup
            email: str
            age: int
 
-3. Set up FastAPI with QueryMate:
+3. Set up FastAPI with QueryMate (Synchronous):
 
    .. code-block:: python
 
@@ -40,6 +53,45 @@ Basic Setup
            db: Session = Depends(get_db)
        ):
            return query.run(db, User)
+
+4. Set up FastAPI with QueryMate (Asynchronous):
+
+   .. code-block:: python
+
+       from fastapi import FastAPI, Depends
+       from sqlmodel.ext.asyncio.session import AsyncSession
+       from sqlalchemy.ext.asyncio import create_async_engine
+       from sqlalchemy.orm import sessionmaker
+       from querymate import QueryMate
+
+       app = FastAPI()
+
+       # Create async database engine
+       engine = create_async_engine("sqlite+aiosqlite:///example.db")
+
+       # Create async session factory
+       async_session = sessionmaker(
+           engine,
+           class_=AsyncSession,
+           expire_on_commit=False,
+           autocommit=False,
+           autoflush=False,
+       )
+
+       # Database dependency
+       async def get_db() -> AsyncGenerator[AsyncSession, None]:
+           async with async_session() as session:
+               try:
+                   yield session
+               finally:
+                   await session.close()
+
+       @app.get("/users")
+       async def get_users(
+           query: QueryMate = Depends(QueryMate.fastapi_dependency),
+           db: AsyncSession = Depends(get_db)
+       ):
+           return await query.run_async(db, User)
 
 Basic Usage
 ----------

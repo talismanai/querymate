@@ -1,14 +1,45 @@
-from collections.abc import Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.datastructures import QueryParams
 from sqlalchemy import Engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    create_async_engine,
+)
+from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from querymate.core.querymate import Querymate
 from tests.models import Post, User
+
+
+@pytest.fixture
+async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    yield engine
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.fixture
+async def async_db(async_engine: Any) -> AsyncGenerator[AsyncSession, None]:
+    async_session = sessionmaker(
+        async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with async_session() as session:  # type: ignore
+        yield session
 
 
 @pytest.fixture
@@ -223,3 +254,91 @@ def test_from_qs_with_empty_query() -> None:
     assert result.sort == []
     assert result.limit == 10
     assert result.offset == 0
+
+
+@pytest.mark.asyncio
+async def test_run_async(async_db: AsyncSession) -> None:
+    """Test running an async query with basic filters."""
+    # Create test data
+    user1 = User(id=1, name="John", email="john@example.com", age=30)
+    user2 = User(id=2, name="Jane", email="jane@example.com", age=25)
+    async_db.add(user1)
+    async_db.add(user2)
+    await async_db.commit()
+
+    # Create and run query
+    querymate = Querymate(
+        select=["id", "name", "age"],
+        filter={"age": {"gt": 25}},
+        sort=["-age"],
+        limit=10,
+        offset=0,
+    )
+    results = await querymate.run_async(async_db, User)
+    # Verify results
+    assert len(results) == 1
+    assert results[0].name == "John"
+    assert results[0].age == 30
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_nested_filters(async_db: AsyncSession) -> None:
+    """Test running an async query with nested filters."""
+    # Create test data
+    user1 = User(id=1, name="John", email="john@example.com", age=25)
+    user2 = User(id=2, name="Jane", email="jane@example.com", age=20)
+    async_db.add(user1)
+    async_db.add(user2)
+    await async_db.commit()
+
+    post1 = Post(
+        id=1, title="Python Tutorial", content="Learn Python", user_id=user1.id
+    )
+    post2 = Post(id=2, title="Java Basics", content="Learn Java", user_id=user2.id)
+    async_db.add(post1)
+    async_db.add(post2)
+    await async_db.commit()
+
+    # Create and run query
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        filter={"posts.title": {"cont": "Python"}, "age": {"gt": 18}},
+    )
+    results = await querymate.run_async(async_db, User)
+
+    # Verify results
+    assert len(results) == 1
+    assert results[0].name == "John"
+    assert results[0].posts[0].title == "Python Tutorial"
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_complex_filters(async_db: AsyncSession) -> None:
+    """Test running an async query with complex filters."""
+    # Create test data
+    user1 = User(id=1, name="John", email="john@example.com", age=25)
+    user2 = User(id=2, name="Jane", email="jane@example.com", age=20)
+    async_db.add(user1)
+    async_db.add(user2)
+    await async_db.commit()
+
+    post1 = Post(id=1, title="Learn Python", content="Python basics", user_id=user1.id)
+    post2 = Post(id=2, title="Java Basics", content="Learn Java", user_id=user2.id)
+    async_db.add(post1)
+    async_db.add(post2)
+    await async_db.commit()
+
+    # Create and run query
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        filter={
+            "posts.title": {"cont": "Python", "starts_with": "Learn"},
+            "age": {"gt": 18, "lt": 30},
+        },
+    )
+    results = await querymate.run_async(async_db, User)
+
+    # Verify results
+    assert len(results) == 1
+    assert results[0].name == "John"
+    assert results[0].posts[0].title == "Learn Python"

@@ -69,14 +69,14 @@ Example with multiple filters and relationships:
     ):
         # Example query:
         # /posts?q={
-        #     "q": {
+        #     "filter": {
         #         "title": {"cont": "Python"},
         #         "author.name": {"starts_with": "John"},
         #         "created_at": {"gt": "2024-01-01"}
         #     },
         #     "sort": ["-created_at"],
         #     "limit": 10,
-        #     "fields": ["id", "title", {"author": ["name"]}]
+        #     "select": ["id", "title", {"author": ["name"]}]
         # }
         return query.run(db, Post)
 
@@ -95,7 +95,7 @@ Example with nested relationships and field selection:
     ):
         # Example query:
         # /users/1/posts?q={
-        #     "fields": [
+        #     "select": [
         #         "title",
         #         "content",
         #         {

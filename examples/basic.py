@@ -43,7 +43,7 @@ async def get_users(
 
 
 # Example query parameters:
-# ?q={"q": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "fields": ["id", "name"]}
+# ?q={"filter": {"age": {"gt": 18}}, "sort": ["-name", "age"], "limit": 10, "offset": 0, "select": ["id", "name"]}
 
 if __name__ == "__main__":
     import uvicorn
