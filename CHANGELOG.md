@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4] - 2025-04-30
+
+### Patch Changes
+
+Fixes on packaging
+
 ## [0.3.3] - 2025-04-30
 
 ### Patch Changes
