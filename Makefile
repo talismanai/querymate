@@ -55,11 +55,14 @@ clean:
 # All checks
 all-checks: lint test-cov
 
+all: setup lint format test docs
+
 # Default target
 .DEFAULT_GOAL := help
 help:
 	@echo "Available targets:"
 	@echo "  setup        - Set up the development environment"
+	@echo "  install      - Install packages"
 	@echo "  test         - Run tests"
 	@echo "  test-cov     - Run tests with coverage"
 	@echo "  lint         - Run linters"
