@@ -142,7 +142,7 @@ def test_run(db: Session) -> None:
         limit=10,
         offset=0,
     )
-    results: list[User] = querymate.run(db=db, model=User)
+    results: list[User] = querymate.run_raw(db=db, model=User)
 
     assert len(results) == 1
 
@@ -226,7 +226,7 @@ def test_querymate_run_with_nested_filters(db: Session) -> None:
         select=["id", "name", {"posts": ["id", "title"]}],
         filter={"posts.title": {"cont": "Python"}, "age": {"gt": 18}},
     )
-    results = querymate.run(db, User)
+    results = querymate.run_raw(db, User)
 
     # Verify results
     assert len(results) == 1
@@ -274,7 +274,7 @@ async def test_run_async(async_db: AsyncSession) -> None:
         limit=10,
         offset=0,
     )
-    results = await querymate.run_async(async_db, User)
+    results = await querymate.run_raw_async(async_db, User)
     # Verify results
     assert len(results) == 1
     assert results[0].name == "John"
@@ -304,7 +304,7 @@ async def test_run_async_with_nested_filters(async_db: AsyncSession) -> None:
         select=["id", "name", {"posts": ["id", "title"]}],
         filter={"posts.title": {"cont": "Python"}, "age": {"gt": 18}},
     )
-    results = await querymate.run_async(async_db, User)
+    results = await querymate.run_raw_async(async_db, User)
 
     # Verify results
     assert len(results) == 1
@@ -336,9 +336,113 @@ async def test_run_async_with_complex_filters(async_db: AsyncSession) -> None:
             "age": {"gt": 18, "lt": 30},
         },
     )
-    results = await querymate.run_async(async_db, User)
+    results = await querymate.run_raw_async(async_db, User)
 
     # Verify results
     assert len(results) == 1
     assert results[0].name == "John"
     assert results[0].posts[0].title == "Learn Python"
+
+
+# ================================
+# Test cases for serialization
+# ================================
+def test_serialize_simple_object(db: Session) -> None:
+    """Test serialization of a simple object with direct fields."""
+    user = User(id=1, name="John", email="john@example.com", age=30)
+    db.add(user)
+    db.commit()
+
+    querymate = Querymate(select=["id", "name"])
+    serialized = querymate.run(db=db, model=User)
+
+    assert len(serialized) == 1
+    assert serialized[0] == {"id": 1, "name": "John"}
+
+
+def test_serialize_with_relationships(db: Session) -> None:
+    """Test serialization of an object with relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    db.add(post)
+    db.add(user)
+    db.commit()
+
+    querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
+    serialized = querymate.run(db=db, model=User)
+
+    assert len(serialized) == 1
+    assert serialized[0] == {
+        "id": 1,
+        "name": "John",
+        "posts": [{"id": 1, "title": "Post 1"}],
+    }
+
+
+def test_serialize_with_non_list_relationships(db: Session) -> None:
+    """Test serialization of an object with non-list relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    db.add(post)
+    db.add(user)
+    db.commit()
+
+    querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
+    serialized = querymate.run(db=db, model=User)
+
+    assert len(serialized) == 1
+    assert serialized[0] == {
+        "id": 1,
+        "name": "John",
+        "posts": [{"id": 1, "title": "Post 1"}],
+    }
+
+
+async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
+    """Test serialization of a simple object with direct fields."""
+    user = User(id=1, name="John", email="john@example.com", age=30)
+    async_db.add(user)
+    await async_db.commit()
+
+    querymate = Querymate(select=["id", "name"])
+    serialized = await querymate.run_async(async_db, User)
+    assert len(serialized) == 1
+    assert serialized[0] == {"id": 1, "name": "John"}
+
+
+async def test_serialize_with_relationships_async(async_db: AsyncSession) -> None:
+    """Test serialization of an object with relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    async_db.add(post)
+    async_db.add(user)
+    await async_db.commit()
+
+    querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
+    serialized = await querymate.run_async(async_db, User)
+    assert len(serialized) == 1
+    assert serialized[0] == {
+        "id": 1,
+        "name": "John",
+        "posts": [{"id": 1, "title": "Post 1"}],
+    }
+
+
+async def test_serialize_with_non_list_relationships_async(
+    async_db: AsyncSession,
+) -> None:
+    """Test serialization of an object with non-list relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    async_db.add(post)
+    async_db.add(user)
+    await async_db.commit()
+
+    querymate = Querymate(select=["id", "title", {"user": ["id", "name"]}])
+    serialized = await querymate.run_async(async_db, Post)
+    assert len(serialized) == 1
+    assert serialized[0] == {
+        "id": 1,
+        "title": "Post 1",
+        "user": {"id": 1, "name": "John"},
+    }

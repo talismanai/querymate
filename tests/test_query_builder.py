@@ -512,3 +512,125 @@ async def test_exec_async(async_db: AsyncSession) -> None:
         (1, "John", 1, "Post 1"),
         (2, "Jane", 2, "Post 2"),
     ]
+
+
+# ================================
+# Test cases for serialization
+# ================================
+def test_serialize_simple_object(db: Session) -> None:
+    """Test serialization of a simple object with direct fields."""
+    user = User(id=1, name="John", email="john@example.com", age=30)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {"id": 1, "name": "John"}
+
+
+def test_serialize_with_relationships(db: Session) -> None:
+    """Test serialization of an object with relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    db.add(post)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "posts": [{"id": 1, "title": "Post 1"}],
+    }
+
+
+def test_serialize_with_non_list_relationships(db: Session) -> None:
+    """Test serialization of an object with non-list relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    db.add(post)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=Post)
+    query_builder.apply_select(["id", "title", {"user": ["id", "name"]}])
+    results = query_builder.fetch(db, Post)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "title": "Post 1",
+        "user": {"id": 1, "name": "John"},
+    }
+
+
+async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
+    """Test serialization of a simple object with direct fields."""
+    user = User(id=1, name="John", email="john@example.com", age=30)
+    async_db.add(user)
+    await async_db.commit()
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"])
+    results = await query_builder.fetch_async(async_db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {"id": 1, "name": "John"}
+
+
+async def test_serialize_with_relationships_async(async_db: AsyncSession) -> None:
+    """Test serialization of an object with relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    async_db.add(post)
+    async_db.add(user)
+    await async_db.commit()
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    results = await query_builder.fetch_async(async_db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "posts": [{"id": 1, "title": "Post 1"}],
+    }
+
+
+async def test_serialize_with_non_list_relationships_async(
+    async_db: AsyncSession,
+) -> None:
+    """Test serialization of an object with non-list relationships."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    async_db.add(post)
+    async_db.add(user)
+    await async_db.commit()
+
+    query_builder = QueryBuilder(model=Post)
+    query_builder.apply_select(["id", "title", {"user": ["id", "name"]}])
+    results = await query_builder.fetch_async(async_db, Post)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "title": "Post 1",
+        "user": {"id": 1, "name": "John"},
+    }
