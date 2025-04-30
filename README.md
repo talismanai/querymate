@@ -1,6 +1,7 @@
 # 🔍 QueryMate
 
 [![PyPI version](https://badge.fury.io/py/querymate.svg)](https://badge.fury.io/py/querymate)
+[![codecov](https://codecov.io/gh/banduk/querymate/graph/badge.svg?token=CXN9YCLMMG)](https://codecov.io/gh/banduk/querymate)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
