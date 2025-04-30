@@ -3,11 +3,27 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import os
+import sys
+from pathlib import Path
+
+# Add the project root directory to the Python path
+sys.path.insert(0, os.path.abspath(".."))
+
+# Read version from pyproject.toml
+def get_version():
+    try:
+        import tomli
+        with open(Path(__file__).parent.parent / "pyproject.toml", "rb") as f:
+            return tomli.load(f)["project"]["version"]
+    except ImportError:
+        return "0.3.2"  # Fallback to current version
+
 # -- Project information -----------------------------------------------------
 project = "QueryMate"
 copyright = "2024, QueryMate Contributors"
 author = "QueryMate Contributors"
-release = "0.0.1"
+release = get_version()
 
 # -- General configuration ---------------------------------------------------
 extensions = [
