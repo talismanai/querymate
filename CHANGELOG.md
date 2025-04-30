@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] - 2025-04-30
+
+### Patch Changes
+
+Async support
+
 ## [0.3.13] - 2025-04-30
 
 ### Patch Changes
