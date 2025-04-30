@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.3] - 2025-04-30
+
+### Patch Changes
+
+Fix from_qs
+
 ## [0.4.2] - 2025-04-30
 
 ### Patch Changes
