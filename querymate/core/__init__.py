@@ -15,7 +15,9 @@ from querymate.core.filter import GreaterThanPredicate as GreaterThanPredicate
 from querymate.core.filter import InPredicate as InPredicate
 from querymate.core.filter import IsNotNullPredicate as IsNotNullPredicate
 from querymate.core.filter import IsNullPredicate as IsNullPredicate
-from querymate.core.filter import LessThanOrEqualPredicate as LessThanOrEqualPredicate
+from querymate.core.filter import (
+    LessThanOrEqualPredicate as LessThanOrEqualPredicate,
+)
 from querymate.core.filter import LessThanPredicate as LessThanPredicate
 from querymate.core.filter import NotEqualPredicate as NotEqualPredicate
 from querymate.core.filter import NotInPredicate as NotInPredicate

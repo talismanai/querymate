@@ -6,7 +6,9 @@ from querymate.core import ContainsPredicate as ContainsPredicate
 from querymate.core import EndsWithPredicate as EndsWithPredicate
 from querymate.core import EqualPredicate as EqualPredicate
 from querymate.core import FilterBuilder as FilterBuilder
-from querymate.core import GreaterThanOrEqualPredicate as GreaterThanOrEqualPredicate
+from querymate.core import (
+    GreaterThanOrEqualPredicate as GreaterThanOrEqualPredicate,
+)
 from querymate.core import GreaterThanPredicate as GreaterThanPredicate
 from querymate.core import InPredicate as InPredicate
 from querymate.core import IsNotNullPredicate as IsNotNullPredicate
