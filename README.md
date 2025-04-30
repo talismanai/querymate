@@ -2,6 +2,7 @@
 
 [![PyPI version](https://badge.fury.io/py/querymate.svg)](https://badge.fury.io/py/querymate)
 [![codecov](https://codecov.io/gh/banduk/querymate/graph/badge.svg?token=CXN9YCLMMG)](https://codecov.io/gh/banduk/querymate)
+[![Documentation](https://img.shields.io/badge/%F0%9F%93%98-documentation-blue?link=https%3A%2F%2Fbanduk.github.io%2Fquerymate%2F)](https://banduk.github.io/querymate/)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
