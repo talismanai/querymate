@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1] - 2025-04-30
+
+### Patch Changes
+
+Tests
+
 ## [0.3.0] - 2025-04-29
 
 ### Minor Changes
