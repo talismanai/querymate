@@ -201,3 +201,25 @@ def test_querymate_run_with_nested_filters(db: Session) -> None:
     assert len(results) == 1
     assert results[0].name == "John"
     assert results[0].posts[0].title == "Python Tutorial"
+
+
+def test_from_qs_with_invalid_json() -> None:
+    """Test from_qs method with invalid JSON."""
+    from fastapi import Request
+
+    request = Request({"type": "http", "query_string": b"q=invalid_json"})
+    with pytest.raises(ValueError, match="Invalid JSON in query parameter"):
+        Querymate.from_qs(request.query_params)
+
+
+def test_from_qs_with_empty_query() -> None:
+    """Test from_qs method with empty query."""
+    from fastapi import Request
+
+    request = Request({"type": "http", "query_string": b""})
+    result = Querymate.from_qs(request.query_params)
+    assert result.select == []
+    assert result.filter == {}
+    assert result.sort == []
+    assert result.limit == 10
+    assert result.offset == 0
