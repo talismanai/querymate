@@ -6,7 +6,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, create_engine, desc, select
 from sqlmodel.pool import StaticPool
 
-from querymate.core.querymate import QueryBuilder
+from querymate.core.query_builder import QueryBuilder
 from tests.models import Post, User
 
 
@@ -134,6 +134,18 @@ def test_sort() -> None:
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
+def test_sort_expliscit_asc() -> None:
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    query_builder.apply_sort(["+age"])
+    expected_query = (
+        select(User.id, User.name, Post.id, Post.title).join(Post).order_by(User.age)  # type: ignore
+    )
+    assert str(
+        query_builder.query.compile(compile_kwargs={"literal_binds": True})
+    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+
 def test_sort_with_nested_fields() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
@@ -146,6 +158,22 @@ def test_sort_with_nested_fields() -> None:
     assert str(
         query_builder.query.compile(compile_kwargs={"literal_binds": True})
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+
+def test_sort_with_invalid_nested_field() -> None:
+    """Test sorting with invalid nested field."""
+    builder = QueryBuilder(User)
+    builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    with pytest.raises(AttributeError):
+        builder.apply_sort(["posts.invalid_field"])
+
+
+def test_sort_with_invalid_relationship() -> None:
+    """Test sorting with invalid relationship."""
+    builder = QueryBuilder(User)
+    builder.apply_select(["id", "name"])
+    with pytest.raises(AttributeError):
+        builder.apply_sort(["invalid_relationship.field"])
 
 
 # ================================
@@ -323,3 +351,74 @@ def test_query_builder_filter_with_multiple_operators() -> None:
     assert '"user".age < 30' in compiled_query
     assert "post.title LIKE '%' || 'Python' || '%'" in compiled_query
     assert "post.title LIKE 'Learn' || '%'" in compiled_query
+
+
+def test_select_with_invalid_field() -> None:
+    """Test _select method with invalid field."""
+    builder = QueryBuilder(User)
+    with pytest.raises(AttributeError):
+        builder._select(User, ["invalid_field"])
+
+
+def test_select_with_invalid_relationship() -> None:
+    """Test _select method with invalid relationship."""
+    builder = QueryBuilder(User)
+    result = builder._select(User, [{"invalid_relationship": ["field"]}])
+    assert len(result[0]) == 0
+    assert len(result[1]) == 0
+
+
+def test_select_with_invalid_relationship_fields() -> None:
+    """Test _select method with invalid relationship fields."""
+    builder = QueryBuilder(User)
+    with pytest.raises(AttributeError):
+        builder._select(User, [{"posts": ["invalid_field"]}])
+
+
+def test_build_with_invalid_select() -> None:
+    """Test build method with invalid select fields."""
+    builder = QueryBuilder(User)
+    with pytest.raises(AttributeError):
+        builder.build(select=["invalid_field"])
+
+
+def test_build_with_invalid_filter() -> None:
+    """Test build method with invalid filter."""
+    builder = QueryBuilder(User)
+    with pytest.raises(AttributeError):
+        builder.build(filter={"invalid_field": {"eq": "test"}})
+
+
+def test_build_with_invalid_sort() -> None:
+    """Test build method with invalid sort field."""
+    builder = QueryBuilder(User)
+    with pytest.raises(AttributeError):
+        builder.build(sort=["invalid_field"])
+
+
+def test_build_with_invalid_limit() -> None:
+    """Test build method with invalid limit."""
+    builder = QueryBuilder(User)
+    result = builder.build(limit=-1)
+    assert result is not None
+
+
+def test_build_with_invalid_offset() -> None:
+    """Test build method with invalid offset."""
+    builder = QueryBuilder(User)
+    result = builder.build(offset=-1)
+    assert result is not None
+
+
+def test_reconstruct_objects_with_empty_results() -> None:
+    """Test reconstruct_objects method with empty results."""
+    builder = QueryBuilder(User)
+    result = builder.reconstruct_objects([], User)
+    assert result == []
+
+
+def test_reconstruct_object_with_invalid_relationship() -> None:
+    """Test reconstruct_object with invalid relationship."""
+    builder = QueryBuilder(User)
+    with pytest.raises(KeyError):
+        builder.reconstruct_object(User, [{"invalid_relationship": ["field"]}], (), [0])

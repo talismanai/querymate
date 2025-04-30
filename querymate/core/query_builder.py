@@ -388,7 +388,7 @@ class QueryBuilder:
         Returns:
             tuple[T, list[int]]: The reconstructed model instance and updated field index.
         """
-        mapper = inspect(model)
+        mapper: Mapper = inspect(model)
         obj_kwargs: dict[str, Any] = {}
         related_objs: dict[str, list[Any]] = {}
 
@@ -398,8 +398,6 @@ class QueryBuilder:
                 field_idx[0] += 1
             elif isinstance(field, dict):
                 for relation_name, relation_fields in field.items():
-                    if not mapper:
-                        raise ValueError(f"Mapper for {model} not found")
                     relation = mapper.relationships[relation_name]
                     related_model: type[T] = relation.mapper.class_
                     # Recursively reconstruct related object(s)

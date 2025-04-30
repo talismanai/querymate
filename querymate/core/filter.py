@@ -44,7 +44,7 @@ class Predicate(ABC):
         Returns:
             Any: The SQLAlchemy expression representing the predicate.
         """
-        ...
+        ...  # pragma: no cover
 
 
 # ----------------------------
@@ -281,9 +281,15 @@ class FilterBuilder:
 
         for field, condition in filters_dict.items():
             if field == "and":
-                filters.append(and_(*self._parse(model, condition)))
+                and_conditions = []
+                for cond in condition:
+                    and_conditions.extend(self._parse(model, cond))
+                filters.append(and_(*and_conditions))
             elif field == "or":
-                filters.append(or_(*self._parse(model, condition)))
+                or_conditions = []
+                for cond in condition:
+                    or_conditions.extend(self._parse(model, cond))
+                filters.append(or_(*or_conditions))
             else:
                 column = self.resolver.resolve(model, field)
                 if isinstance(condition, dict):
