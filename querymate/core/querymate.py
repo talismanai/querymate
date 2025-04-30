@@ -120,7 +120,7 @@ class Querymate(BaseModel):
         """
         return urlencode({"q": self.model_dump_json(by_alias=True)})
 
-    def run(self, db: Session, model: type[T]) -> list[T]:
+    def run_raw(self, db: Session, model: type[T]) -> list[T]:
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -143,7 +143,55 @@ class Querymate(BaseModel):
         )
         return query_builder.fetch(db, model)
 
-    async def run_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+    def run(self, db: Session, model: type[T]) -> list[dict[str, Any]]:
+        """Build and execute the query based on the parameters.
+
+        This method combines filtering, sorting, pagination, and field selection
+        to build and execute a database query.
+
+        Args:
+            db (Session): The SQLModel database session.
+            model (type[SQLModel]): The SQLModel model class to query.
+
+        Returns:
+            list[dict[str, Any]]: A list of model instances matching the query parameters.
+        """
+        query_builder = QueryBuilder(model=model)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self.limit,
+            offset=self.offset,
+        )
+        data = query_builder.fetch(db, model)
+        return query_builder.serialize(data)
+
+    async def run_async(self, db: AsyncSession, model: type[T]) -> list[dict[str, Any]]:
+        """Build and execute the query asynchronously based on the parameters.
+
+        This method combines filtering, sorting, pagination, and field selection
+        to build and execute a database query asynchronously.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+            model (type[SQLModel]): The SQLModel model class to query.
+
+        Returns:
+            list[dict[str, Any]]: A list of model instances matching the query parameters.
+        """
+        query_builder = QueryBuilder(model=model)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self.limit,
+            offset=self.offset,
+        )
+        data = await query_builder.fetch_async(db, model)
+        return query_builder.serialize(data)
+
+    async def run_raw_async(self, db: AsyncSession, model: type[T]) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection

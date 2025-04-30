@@ -325,6 +325,55 @@ class QueryBuilder:
             .apply_offset(offset)
         )
 
+    def _serialize_object(
+        self, obj: SQLModel, fields: list[FieldSelection] | list[str]
+    ) -> dict[str, Any]:
+        """Serialize an object with only the requested fields.
+
+        Args:
+            obj (T): The object to serialize.
+            fields (list[FieldSelection] | list[str]): The fields to include in the serialization.
+
+        Returns:
+            dict[str, Any]: The serialized object with only the requested fields.
+        """
+        result: dict[str, Any] = {}
+
+        for field in fields:
+            if isinstance(field, str):
+                if hasattr(obj, field):
+                    result[field] = getattr(obj, field)
+            elif isinstance(field, dict):
+                for relation_name, relation_fields in field.items():
+                    if hasattr(obj, relation_name):
+                        related_obj = getattr(obj, relation_name)
+                        if isinstance(related_obj, list):
+                            result[relation_name] = [
+                                self._serialize_object(item, relation_fields)
+                                for item in related_obj
+                            ]
+                        else:
+                            result[relation_name] = (
+                                self._serialize_object(related_obj, relation_fields)
+                                if related_obj is not None
+                                else None
+                            )
+
+        return result
+
+    def serialize(self, objects: list[T]) -> list[dict[str, Any]]:
+        """Serialize objects with only the requested fields.
+
+        Args:
+            objects (list[T] | T): The object(s) to serialize.
+            fields (list[FieldSelection] | list[str] | None): The fields to include in the serialization.
+                If None, uses the fields from the current select parameter.
+
+        Returns:
+            list[dict[str, Any]] | dict[str, Any]: The serialized object(s) with only the requested fields.
+        """
+        return [self._serialize_object(obj, self.select) for obj in objects]
+
     def fetch(self, db: Session, model: type[T]) -> list[T]:
         """Execute the query and return the results.
 
