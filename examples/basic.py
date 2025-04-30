@@ -36,7 +36,7 @@ def get_db():
 # Example route using QueryMate
 @app.get("/users")
 async def get_users(
-    query: Querymate = Depends(Querymate.querymate_dependency),
+    query: Querymate = Depends(Querymate.fasapi_dependency),
     db: Session = Depends(get_db),
 ):
     return query.run(db, User)

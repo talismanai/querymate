@@ -36,7 +36,7 @@ Here's a complete example of a FastAPI application with CRUD operations using Qu
     # CRUD endpoints
     @app.get("/users")
     def get_users(
-        query: QueryMate = Depends(QueryMate.querymate_dependency),
+        query: QueryMate = Depends(QueryMate.fasapi_dependency),
         db: Session = Depends(get_db)
     ):
         return query.run(db, User)
@@ -64,7 +64,7 @@ Example with multiple filters and relationships:
 
     @app.get("/posts")
     def get_posts(
-        query: QueryMate = Depends(QueryMate.querymate_dependency),
+        query: QueryMate = Depends(QueryMate.fasapi_dependency),
         db: Session = Depends(get_db)
     ):
         # Example query:
@@ -90,7 +90,7 @@ Example with nested relationships and field selection:
     @app.get("/users/{user_id}/posts")
     def get_user_posts(
         user_id: int,
-        query: QueryMate = Depends(QueryMate.querymate_dependency),
+        query: QueryMate = Depends(QueryMate.fasapi_dependency),
         db: Session = Depends(get_db)
     ):
         # Example query:
