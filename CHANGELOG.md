@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2025-05-02
+
+### Minor Changes
+
+More predicates
+
 ## [0.5.0] - 2025-04-30
 
 ### Minor Changes
