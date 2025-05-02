@@ -127,8 +127,22 @@ def test_fastapi_dependency() -> None:
 def test_run(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
-    user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=25, posts=[post2])
+    user1 = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post1],
+    )
+    user2 = User(
+        id=2,
+        name="Jane",
+        is_active=True,
+        email="jane@example.com",
+        age=25,
+        posts=[post2],
+    )
 
     db.add(post1)
     db.add(post2)
@@ -207,8 +221,8 @@ def test_querymate_to_qs_with_nested_filters() -> None:
 def test_querymate_run_with_nested_filters(db: Session) -> None:
     """Test running a query with nested filters."""
     # Create test data
-    user1 = User(id=1, name="John", email="john@example.com", age=25)
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=20)
+    user1 = User(id=1, name="John", is_active=True, email="john@example.com", age=25)
+    user2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=20)
     db.add(user1)
     db.add(user2)
     db.commit()
@@ -260,8 +274,8 @@ def test_from_qs_with_empty_query() -> None:
 async def test_run_async(async_db: AsyncSession) -> None:
     """Test running an async query with basic filters."""
     # Create test data
-    user1 = User(id=1, name="John", email="john@example.com", age=30)
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=25)
+    user1 = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
+    user2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25)
     async_db.add(user1)
     async_db.add(user2)
     await async_db.commit()
@@ -285,8 +299,8 @@ async def test_run_async(async_db: AsyncSession) -> None:
 async def test_run_async_with_nested_filters(async_db: AsyncSession) -> None:
     """Test running an async query with nested filters."""
     # Create test data
-    user1 = User(id=1, name="John", email="john@example.com", age=25)
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=20)
+    user1 = User(id=1, name="John", is_active=True, email="john@example.com", age=25)
+    user2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=20)
     async_db.add(user1)
     async_db.add(user2)
     await async_db.commit()
@@ -316,8 +330,8 @@ async def test_run_async_with_nested_filters(async_db: AsyncSession) -> None:
 async def test_run_async_with_complex_filters(async_db: AsyncSession) -> None:
     """Test running an async query with complex filters."""
     # Create test data
-    user1 = User(id=1, name="John", email="john@example.com", age=25)
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=20)
+    user1 = User(id=1, name="John", is_active=True, email="john@example.com", age=25)
+    user2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=20)
     async_db.add(user1)
     async_db.add(user2)
     await async_db.commit()
@@ -349,7 +363,7 @@ async def test_run_async_with_complex_filters(async_db: AsyncSession) -> None:
 # ================================
 def test_serialize_simple_object(db: Session) -> None:
     """Test serialization of a simple object with direct fields."""
-    user = User(id=1, name="John", email="john@example.com", age=30)
+    user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
     db.add(user)
     db.commit()
 
@@ -363,7 +377,14 @@ def test_serialize_simple_object(db: Session) -> None:
 def test_serialize_with_relationships(db: Session) -> None:
     """Test serialization of an object with relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     db.add(post)
     db.add(user)
     db.commit()
@@ -382,7 +403,14 @@ def test_serialize_with_relationships(db: Session) -> None:
 def test_serialize_with_non_list_relationships(db: Session) -> None:
     """Test serialization of an object with non-list relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     db.add(post)
     db.add(user)
     db.commit()
@@ -400,7 +428,7 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
 
 async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
     """Test serialization of a simple object with direct fields."""
-    user = User(id=1, name="John", email="john@example.com", age=30)
+    user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
     async_db.add(user)
     await async_db.commit()
 
@@ -413,7 +441,14 @@ async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
 async def test_serialize_with_relationships_async(async_db: AsyncSession) -> None:
     """Test serialization of an object with relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     async_db.add(post)
     async_db.add(user)
     await async_db.commit()
@@ -433,7 +468,14 @@ async def test_serialize_with_non_list_relationships_async(
 ) -> None:
     """Test serialization of an object with non-list relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     async_db.add(post)
     async_db.add(user)
     await async_db.commit()

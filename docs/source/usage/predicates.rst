@@ -8,8 +8,8 @@ Built-in Predicates
 
 The following predicates are available out of the box:
 
-Comparison Predicates
-~~~~~~~~~~~~~~~~~~~
+Basic Predicates
+~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -36,8 +36,189 @@ Comparison Predicates
    * - ``lte``
      - Less than or equal to
      - ``{"age": {"lte": 18}}``
+   * - ``cont``
+     - Contains
+     - ``{"name": {"cont": "john"}}``
+   * - ``starts_with``
+     - Starts with
+     - ``{"name": {"starts_with": "j"}}``
+   * - ``ends_with``
+     - Ends with
+     - ``{"name": {"ends_with": "n"}}``
+   * - ``in``
+     - In list
+     - ``{"age": {"in": [18, 19, 20]}}``
+   * - ``nin``
+     - Not in list
+     - ``{"age": {"nin": [18, 19, 20]}}``
+   * - ``is_null``
+     - Is null
+     - ``{"email": {"is_null": true}}``
+   * - ``is_not_null``
+     - Is not null
+     - ``{"email": {"is_not_null": true}}``
+
+Pattern Matching Predicates
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Predicate
+     - Description
+     - Example
+   * - ``matches``
+     - Matches pattern using LIKE
+     - ``{"name": {"matches": "John%"}}``
+   * - ``does_not_match``
+     - Does not match pattern using NOT LIKE
+     - ``{"name": {"does_not_match": "John%"}}``
+   * - ``matches_any``
+     - Matches any of the patterns
+     - ``{"name": {"matches_any": ["John%", "Jane%"]}}``
+   * - ``matches_all``
+     - Matches all of the patterns
+     - ``{"name": {"matches_all": ["John%", "%Doe"]}}``
+   * - ``does_not_match_any``
+     - Does not match any of the patterns
+     - ``{"name": {"does_not_match_any": ["John%", "Jane%"]}}``
+   * - ``does_not_match_all``
+     - Does not match all of the patterns
+     - ``{"name": {"does_not_match_all": ["John%", "%Doe"]}}``
+
+Presence Predicates
+~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Predicate
+     - Description
+     - Example
+   * - ``present``
+     - Not null and not empty
+     - ``{"name": {"present": true}}``
+   * - ``blank``
+     - Null or empty
+     - ``{"name": {"blank": true}}``
+
+Comparison Predicates
+~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Predicate
+     - Description
+     - Example
+   * - ``lt_any``
+     - Less than any of the values
+     - ``{"age": {"lt_any": [18, 21]}}``
+   * - ``lteq_any``
+     - Less than or equal to any of the values
+     - ``{"age": {"lteq_any": [18, 21]}}``
+   * - ``gt_any``
+     - Greater than any of the values
+     - ``{"age": {"gt_any": [18, 21]}}``
+   * - ``gteq_any``
+     - Greater than or equal to any of the values
+     - ``{"age": {"gteq_any": [18, 21]}}``
+   * - ``lt_all``
+     - Less than all of the values
+     - ``{"age": {"lt_all": [18, 21]}}``
+   * - ``lteq_all``
+     - Less than or equal to all of the values
+     - ``{"age": {"lteq_all": [18, 21]}}``
+   * - ``gt_all``
+     - Greater than all of the values
+     - ``{"age": {"gt_all": [18, 21]}}``
+   * - ``gteq_all``
+     - Greater than or equal to all of the values
+     - ``{"age": {"gteq_all": [18, 21]}}``
+   * - ``not_eq_all``
+     - Not equal to all of the values
+     - ``{"age": {"not_eq_all": [18, 21]}}``
 
 String Predicates
+~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Predicate
+     - Description
+     - Example
+   * - ``start``
+     - Starts with
+     - ``{"name": {"start": "John"}}``
+   * - ``not_start``
+     - Does not start with
+     - ``{"name": {"not_start": "John"}}``
+   * - ``start_any``
+     - Starts with any of the values
+     - ``{"name": {"start_any": ["John", "Jane"]}}``
+   * - ``start_all``
+     - Starts with all of the values
+     - ``{"name": {"start_all": ["John", "Doe"]}}``
+   * - ``not_start_any``
+     - Does not start with any of the values
+     - ``{"name": {"not_start_any": ["John", "Jane"]}}``
+   * - ``not_start_all``
+     - Does not start with all of the values
+     - ``{"name": {"not_start_all": ["John", "Doe"]}}``
+   * - ``end``
+     - Ends with
+     - ``{"name": {"end": "Doe"}}``
+   * - ``not_end``
+     - Does not end with
+     - ``{"name": {"not_end": "Doe"}}``
+   * - ``end_any``
+     - Ends with any of the values
+     - ``{"name": {"end_any": ["Doe", "Smith"]}}``
+   * - ``end_all``
+     - Ends with all of the values
+     - ``{"name": {"end_all": ["Doe", "Jr"]}}``
+   * - ``not_end_any``
+     - Does not end with any of the values
+     - ``{"name": {"not_end_any": ["Doe", "Smith"]}}``
+   * - ``not_end_all``
+     - Does not end with all of the values
+     - ``{"name": {"not_end_all": ["Doe", "Jr"]}}``
+
+Case-Insensitive Predicates
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Predicate
+     - Description
+     - Example
+   * - ``i_cont``
+     - Case-insensitive contains
+     - ``{"name": {"i_cont": "john"}}``
+   * - ``i_cont_any``
+     - Case-insensitive contains any
+     - ``{"name": {"i_cont_any": ["john", "jane"]}}``
+   * - ``i_cont_all``
+     - Case-insensitive contains all
+     - ``{"name": {"i_cont_all": ["john", "doe"]}}``
+   * - ``not_i_cont``
+     - Case-insensitive does not contain
+     - ``{"name": {"not_i_cont": "john"}}``
+   * - ``not_i_cont_any``
+     - Case-insensitive does not contain any
+     - ``{"name": {"not_i_cont_any": ["john", "jane"]}}``
+   * - ``not_i_cont_all``
+     - Case-insensitive does not contain all
+     - ``{"name": {"not_i_cont_all": ["john", "doe"]}}``
+
+Boolean Predicates
 ~~~~~~~~~~~~~~~
 
 .. list-table::
@@ -47,49 +228,12 @@ String Predicates
    * - Predicate
      - Description
      - Example
-   * - ``cont``
-     - Contains (case-insensitive)
-     - ``{"name": {"cont": "john"}}``
-   * - ``starts_with``
-     - Starts with (case-insensitive)
-     - ``{"name": {"starts_with": "j"}}``
-   * - ``ends_with``
-     - Ends with (case-insensitive)
-     - ``{"name": {"ends_with": "n"}}``
-
-List Predicates
-~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 30 50
-
-   * - Predicate
-     - Description
-     - Example
-   * - ``in``
-     - In list
-     - ``{"age": {"in": [18, 19, 20]}}``
-   * - ``nin``
-     - Not in list
-     - ``{"age": {"nin": [18, 19, 20]}}``
-
-Null Predicates
-~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 30 50
-
-   * - Predicate
-     - Description
-     - Example
-   * - ``is_null``
-     - Is null
-     - ``{"email": {"is_null": true}}``
-   * - ``is_not_null``
-     - Is not null
-     - ``{"email": {"is_not_null": true}}``
+   * - ``true``
+     - Is true
+     - ``{"active": {"true": true}}``
+   * - ``false``
+     - Is false
+     - ``{"active": {"false": true}}``
 
 Usage Examples
 -------------
@@ -124,6 +268,16 @@ You can combine multiple predicates using logical operators:
     # Filter users with age between 18 and 30
     query = QueryMate(filter={
         "age": {"gte": 18, "lte": 30}
+    })
+
+    # Filter users with name starting with "John" or "Jane"
+    query = QueryMate(filter={
+        "name": {"start_any": ["John", "Jane"]}
+    })
+
+    # Filter users with name containing "john" (case-insensitive)
+    query = QueryMate(filter={
+        "name": {"i_cont": "john"}
     })
 
 Extending Predicates

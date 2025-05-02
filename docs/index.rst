@@ -12,6 +12,7 @@ Welcome to QueryMate's documentation!
    source/usage
    source/examples
    defaults
+   predicates
 
 Indices and tables
 ==================

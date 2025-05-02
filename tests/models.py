@@ -6,6 +6,7 @@ class User(SQLModel, table=True):
     name: str
     email: str
     age: int
+    is_active: bool
     posts: list["Post"] = Relationship(back_populates="user")
 
 
