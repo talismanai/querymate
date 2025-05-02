@@ -91,6 +91,7 @@ def test_select_with_asterisk() -> None:
         User.age,
         User.email,
         User.id,
+        User.is_active,
         User.name,
         Post.content,
         Post.id,
@@ -109,6 +110,7 @@ def test_select_with_asterisk_and_duplicated_fields() -> None:
         User.age,
         User.email,
         User.id,
+        User.is_active,
         User.name,
         Post.content,
         Post.id,
@@ -268,8 +270,22 @@ def test_offset_with_negative_value() -> None:
 def test_exec(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
-    user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=25, posts=[post2])
+    user1 = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post1],
+    )
+    user2 = User(
+        id=2,
+        name="Jane",
+        is_active=True,
+        email="jane@example.com",
+        age=25,
+        posts=[post2],
+    )
 
     db.add(post1)
     db.add(post2)
@@ -291,8 +307,22 @@ def test_exec(db: Session) -> None:
 def test_fetch(db: Session) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
-    user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=25, posts=[post2])
+    user1 = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post1],
+    )
+    user2 = User(
+        id=2,
+        name="Jane",
+        is_active=True,
+        email="jane@example.com",
+        age=25,
+        posts=[post2],
+    )
 
     db.add(post1)
     db.add(post2)
@@ -459,7 +489,7 @@ def test_reconstruct_object_with_invalid_relationship() -> None:
 def test_relationship_types(db: Session) -> None:
     """Test that both to-one and to-many relationships are handled correctly."""
     # Create test data
-    user = User(id=1, name="John", email="john@example.com", age=30)
+    user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=user.id)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=user.id)
     user.posts = [post1, post2]
@@ -496,8 +526,22 @@ def test_relationship_types(db: Session) -> None:
 async def test_exec_async(async_db: AsyncSession) -> None:
     post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
     post2 = Post(id=2, title="Post 2", content="Content 2", user_id=2)
-    user1 = User(id=1, name="John", email="john@example.com", age=30, posts=[post1])
-    user2 = User(id=2, name="Jane", email="jane@example.com", age=25, posts=[post2])
+    user1 = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post1],
+    )
+    user2 = User(
+        id=2,
+        name="Jane",
+        is_active=True,
+        email="jane@example.com",
+        age=25,
+        posts=[post2],
+    )
 
     async_db.add(post1)
     async_db.add(post2)
@@ -519,7 +563,7 @@ async def test_exec_async(async_db: AsyncSession) -> None:
 # ================================
 def test_serialize_simple_object(db: Session) -> None:
     """Test serialization of a simple object with direct fields."""
-    user = User(id=1, name="John", email="john@example.com", age=30)
+    user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -536,7 +580,14 @@ def test_serialize_simple_object(db: Session) -> None:
 def test_serialize_with_relationships(db: Session) -> None:
     """Test serialization of an object with relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     db.add(post)
     db.add(user)
     db.commit()
@@ -558,7 +609,14 @@ def test_serialize_with_relationships(db: Session) -> None:
 def test_serialize_with_non_list_relationships(db: Session) -> None:
     """Test serialization of an object with non-list relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     db.add(post)
     db.add(user)
     db.commit()
@@ -579,7 +637,7 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
 
 async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
     """Test serialization of a simple object with direct fields."""
-    user = User(id=1, name="John", email="john@example.com", age=30)
+    user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
     async_db.add(user)
     await async_db.commit()
 
@@ -595,7 +653,14 @@ async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
 async def test_serialize_with_relationships_async(async_db: AsyncSession) -> None:
     """Test serialization of an object with relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     async_db.add(post)
     async_db.add(user)
     await async_db.commit()
@@ -618,7 +683,14 @@ async def test_serialize_with_non_list_relationships_async(
 ) -> None:
     """Test serialization of an object with non-list relationships."""
     post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
-    user = User(id=1, name="John", email="john@example.com", age=30, posts=[post])
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
     async_db.add(post)
     async_db.add(user)
     await async_db.commit()
