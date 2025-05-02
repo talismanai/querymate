@@ -41,6 +41,7 @@ from querymate.core.filter import (
     NotEndAllPredicate,
     NotEndAnyPredicate,
     NotEndPredicate,
+    NotEqAllPredicate,
     NotEqualPredicate,
     NotIContAllPredicate,
     NotIContAnyPredicate,
@@ -606,7 +607,14 @@ def test_false_predicate() -> None:
         == '"user".is_active IS false'
     )
 
-
+def test_not_eq_all_predicate() -> None:
+    """Test not equal to all predicate."""
+    query = select(User)
+    query = NotEqAllPredicate().apply(User.name, ["John", "Jane"])  # type: ignore
+    assert (
+        str(query.compile(compile_kwargs={"literal_binds": True}))
+        == "\"user\".name != 'John' AND \"user\".name != 'Jane'"
+    )
 def test_predicate_registry() -> None:
     """Test predicate registry functionality."""
     from querymate.core.filter import Predicate
