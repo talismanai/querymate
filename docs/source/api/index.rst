@@ -11,10 +11,9 @@ API Reference
 QueryMate Class
 --------------
 
-.. automodule:: querymate.core.querymate
-   :members:
-   :undoc-members:
-   :show-inheritance:
+The QueryMate class provides a powerful interface for building and executing database queries with support for filtering, sorting, pagination, and field selection. It includes built-in serialization capabilities to transform query results into dictionaries containing only the requested fields.
+
+For detailed documentation and examples, see :doc:`querymate`.
 
 QueryBuilder Class
 ----------------
@@ -49,4 +48,9 @@ The following predicates are available for filtering:
 * ``in`` - In list
 * ``nin`` - Not in list
 * ``is_null`` - Is null
-* ``is_not_null`` - Is not null 
+* ``is_not_null`` - Is not null
+* ``matches`` - Matches pattern
+* ``matches_any`` - Matches any of the patterns
+* ``present`` - Value is not null and not empty
+* ``true`` - Value is true
+* ``false`` - Value is false 

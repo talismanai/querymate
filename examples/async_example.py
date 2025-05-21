@@ -53,6 +53,19 @@ async def get_users(
     query: Querymate = Depends(Querymate.fastapi_dependency),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Get users with filtering, sorting, pagination and field selection.
+    
+    Query parameters:
+    - q: JSON string containing query configuration with the following structure:
+        {
+            "select": ["field1", "field2"],  # Fields to include in response
+            "filter": {"field": {"operator": "value"}},  # Filter conditions
+            "sort": ["field1", "-field2"],  # Sort fields (- for descending)
+            "limit": 10,  # Maximum number of records (default: 10, max: 200)
+            "offset": 0  # Number of records to skip (default: 0)
+        }
+    """
     return await query.run_async(db, User)
 
 

@@ -88,6 +88,21 @@ def test_to_qs() -> None:
     )
 
 
+def test_to_dict() -> None:
+    querymate = Querymate(
+        select=["id", "name"],
+        filter={"age": {"gt": 25}},
+        sort=["-age"],
+        limit=10,
+        offset=0,
+    )
+    qp = querymate.to_query_param()
+    assert (
+        qp
+        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%7D"
+    )
+
+
 def test_from_qs() -> None:
     querymate = Querymate(
         select=["id", "name"],
@@ -97,6 +112,17 @@ def test_from_qs() -> None:
         offset=0,
     )
     querymate = Querymate.from_qs(QueryParams(querymate.to_qs()))
+    assert querymate.select == ["id", "name"]
+    assert querymate.filter == {"age": {"gt": 25}}
+    assert querymate.sort == ["-age"]
+    assert querymate.limit == 10
+    assert querymate.offset == 0
+
+
+def test_from_query_param() -> None:
+    querymate = Querymate.from_query_param(
+        "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%7D"
+    )
     assert querymate.select == ["id", "name"]
     assert querymate.filter == {"age": {"gt": 25}}
     assert querymate.sort == ["-age"]
