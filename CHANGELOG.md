@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2025-05-21
+
+### Minor Changes
+
+Add from/to querystring helpers
+
 ## [0.5.1] - 2025-05-02
 
 ### Minor Changes
