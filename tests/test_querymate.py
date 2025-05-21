@@ -88,7 +88,7 @@ def test_to_qs() -> None:
     )
 
 
-def test_to_dict() -> None:
+def test_to_query_param() -> None:
     querymate = Querymate(
         select=["id", "name"],
         filter={"age": {"gt": 25}},
