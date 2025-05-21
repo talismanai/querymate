@@ -1,6 +1,6 @@
 import json
 from typing import Any, TypeVar
-from urllib.parse import parse_qs, quote, unquote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Request
 from fastapi.datastructures import QueryParams
