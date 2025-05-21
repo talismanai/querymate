@@ -1,6 +1,6 @@
 import json
 from typing import Any, TypeVar
-from urllib.parse import urlencode
+from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Request
 from fastapi.datastructures import QueryParams
@@ -117,6 +117,18 @@ class Querymate(BaseModel):
             raise ValueError("Invalid JSON in query parameter") from e
 
     @classmethod
+    def from_query_param(cls, query_param: str) -> "Querymate":
+        """Convert a query parameter string to a QueryMate instance.
+
+        Args:
+            query_param (str): The query parameter string.
+
+        Returns:
+            Querymate: A new QueryMate instance.
+        """
+        return cls.model_validate(json.loads(unquote(query_param)))
+
+    @classmethod
     def fastapi_dependency(cls, request: Request) -> "Querymate":
         """FastAPI dependency for creating a QueryMate instance from a request.
 
@@ -134,7 +146,17 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return urlencode({"q": self.model_dump_json(by_alias=True)})
+        return urlencode(
+            {settings.QUERY_PARAM_NAME: self.model_dump_json(by_alias=True)}
+        )
+
+    def to_query_param(self) -> str:
+        """Convert the QueryMate instance to a query string.
+
+        Returns:
+            str: The URL-encoded query string.
+        """
+        return quote(self.model_dump_json(by_alias=True))
 
     def run_raw(self, db: Session, model: type[T]) -> list[T]:
         """Build and execute the query based on the parameters.
