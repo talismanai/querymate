@@ -1,10 +1,10 @@
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import Depends, FastAPI
-from sqlmodel import Field, SQLModel
-from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
+from sqlmodel import Field, SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from querymate.core.querymate import Querymate
 
@@ -22,11 +22,7 @@ app = FastAPI()
 
 # Create async database engine
 DATABASE_URL = "sqlite+aiosqlite:///example.db"
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=True,
-    future=True
-)
+engine = create_async_engine(DATABASE_URL, echo=True, future=True)
 
 # Create async session factory
 async_session = sessionmaker(
@@ -55,7 +51,7 @@ async def get_users(
 ):
     """
     Get users with filtering, sorting, pagination and field selection.
-    
+
     Query parameters:
     - q: JSON string containing query configuration with the following structure:
         {
@@ -73,4 +69,4 @@ async def get_users(
 @app.on_event("startup")
 async def startup():
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all) 
+        await conn.run_sync(SQLModel.metadata.create_all)

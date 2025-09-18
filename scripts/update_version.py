@@ -34,11 +34,8 @@ def update_version(new_version: str) -> None:
 
     # Update the version line
     import re
-    content = re.sub(
-        r'__version__ = ".*?"',
-        f'__version__ = "{new_version}"',
-        content
-    )
+
+    content = re.sub(r'__version__ = ".*?"', f'__version__ = "{new_version}"', content)
 
     # Write back to file
     with open(init_path, "w") as f:
