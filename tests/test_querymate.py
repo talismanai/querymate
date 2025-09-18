@@ -514,3 +514,110 @@ async def test_serialize_with_non_list_relationships_async(
         "title": "Post 1",
         "user": {"id": 1, "name": "John"},
     }
+
+
+def test_run_with_pagination_sync(db: Session) -> None:
+    """Verify sync run returns items+pagination when requested."""
+    # Seed 7 users
+    users = [
+        User(id=i, name=f"User {i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 8)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    # Page 1, size 3
+    q = Querymate(select=["id", "name"], limit=3, offset=0)
+    result = q.run(db, User, return_pagination=True)
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"items", "pagination"}
+    assert len(result["items"]) == 3
+    p = result["pagination"]
+    assert p["total"] == 7
+    assert p["size"] == 3
+    assert p["pages"] == 3
+    assert p["page"] == 1
+    assert p["previous_page"] is None
+    assert p["next_page"] == 2
+
+
+def test_run_with_pagination_last_page_sync(db: Session) -> None:
+    # Seed 7 users
+    users = [
+        User(id=i, name=f"U{i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 8)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    # Page 3 (offset 6), size 3
+    q = Querymate(select=["id", "name"], limit=3, offset=6)
+    result = q.run(db, User, return_pagination=True)
+    assert isinstance(result, dict)
+    assert len(result["items"]) == 1
+    p = result["pagination"]
+    assert p["total"] == 7
+    assert p["pages"] == 3
+    assert p["page"] == 3
+    assert p["previous_page"] == 2
+    assert p["next_page"] is None
+
+
+def test_run_with_pagination_empty_sync(db: Session) -> None:
+    # No data
+    q = Querymate(select=["id", "name"], limit=5, offset=0, filter={"age": {"gt": 999}})
+    result = q.run(db, User, return_pagination=True)
+    assert isinstance(result, dict)
+    assert result["items"] == []
+    p = result["pagination"]
+    # With no items, we still report at least 1 page and page=1
+    assert p["total"] == 0
+    assert p["size"] == 5
+    assert p["pages"] == 1
+    assert p["page"] == 1
+    assert p["previous_page"] is None
+    assert p["next_page"] is None
+
+
+def test_run_with_pagination_offset_beyond_total_sync(db: Session) -> None:
+    users = [
+        User(id=i, name=f"U{i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 8)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    # Offset far beyond total
+    q = Querymate(select=["id", "name"], limit=3, offset=300)
+    result = q.run(db, User, return_pagination=True)
+    assert isinstance(result, dict)
+    assert result["items"] == []
+    p = result["pagination"]
+    assert p["total"] == 7
+    assert p["pages"] == 3
+    # Page clamped to last page
+    assert p["page"] == 3
+    assert p["previous_page"] == 2
+    assert p["next_page"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_with_pagination_async(async_db: AsyncSession) -> None:
+    users = [
+        User(id=i, name=f"A{i}", is_active=True, email=f"a{i}@ex.com", age=20 + i)
+        for i in range(1, 6)
+    ]
+    async_db.add_all(users)
+    await async_db.commit()
+
+    q = Querymate(select=["id", "name"], limit=2, offset=2)
+    result = await q.run_async(async_db, User, return_pagination=True)
+    assert isinstance(result, dict)
+    assert len(result["items"]) == 2
+    p = result["pagination"]
+    assert p["total"] == 5
+    assert p["size"] == 2
+    assert p["pages"] == 3
+    assert p["page"] == 2
+    assert p["previous_page"] == 1
+    assert p["next_page"] == 3

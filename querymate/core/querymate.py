@@ -158,6 +158,35 @@ class Querymate(BaseModel):
         """
         return quote(self.model_dump_json(by_alias=True))
 
+    def _pagination(self, total: int) -> dict[str, Any]:
+        """Build a pagination dictionary from current state and total count.
+
+        Args:
+            total (int): Total number of matching records.
+
+        Returns:
+            dict[str, Any]: Pagination metadata with total, page, size, pages, previous_page, next_page.
+        """
+        size = self.limit or settings.DEFAULT_LIMIT
+        offset_val = self.offset or settings.DEFAULT_OFFSET
+        pages = (total + size - 1) // size if size > 0 else 1
+        # Ensure at least 1 page for empty results to keep semantics consistent
+        pages = max(1, pages)
+        computed_page = (offset_val // size) + 1 if size > 0 else 1
+        # Clamp page within [1, pages]
+        page = max(1, min(computed_page, pages))
+        previous_page = page - 1 if page > 1 else None
+        next_page = page + 1 if page < pages else None
+
+        return {
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": pages,
+            "previous_page": previous_page,
+            "next_page": next_page,
+        }
+
     def run_raw(self, db: Session, model: type[T]) -> list[T]:
         """Build and execute the query based on the parameters.
 
@@ -181,7 +210,9 @@ class Querymate(BaseModel):
         )
         return query_builder.fetch(db, model)
 
-    def run(self, db: Session, model: type[T]) -> list[dict[str, Any]]:
+    def run(
+        self, db: Session, model: type[T], *, return_pagination: bool = False
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -211,9 +242,17 @@ class Querymate(BaseModel):
             offset=self.offset,
         )
         data = query_builder.fetch(db, model)
-        return query_builder.serialize(data)
+        serialized = query_builder.serialize(data)
 
-    async def run_async(self, db: AsyncSession, model: type[T]) -> list[dict[str, Any]]:
+        if not return_pagination:
+            return serialized
+
+        total = query_builder.count(db)
+        return {"items": serialized, "pagination": self._pagination(total)}
+
+    async def run_async(
+        self, db: AsyncSession, model: type[T], *, return_pagination: bool = False
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -243,7 +282,13 @@ class Querymate(BaseModel):
             offset=self.offset,
         )
         data = await query_builder.fetch_async(db, model)
-        return query_builder.serialize(data)
+        serialized = query_builder.serialize(data)
+
+        if not return_pagination:
+            return serialized
+
+        total = await query_builder.count_async(db)
+        return {"items": serialized, "pagination": self._pagination(total)}
 
     async def run_raw_async(self, db: AsyncSession, model: type[T]) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
