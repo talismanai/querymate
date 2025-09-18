@@ -168,6 +168,32 @@ async def get_users(
     return await query.run_async(db, User)
 ```
 
+### Pagination Metadata Response
+
+In addition to plain lists, you can request a structured response with pagination metadata
+by passing `return_pagination=True` to `run`/`run_async`:
+
+```python
+result = query.run(db, User, return_pagination=True)
+# Or async:
+# result = await query.run_async(db, User, return_pagination=True)
+
+# {
+#   "items": [{"id": 1, "name": "John"}, ...],
+#   "pagination": {
+#     "total": 57,
+#     "page": 2,
+#     "size": 10,
+#     "pages": 6,
+#     "previous_page": 1,
+#     "next_page": 3
+#   }
+# }
+```
+
+This is useful for UIs that need total counts and navigation controls while
+keeping the same query building API.
+
 ### Serialization
 
 QueryMate includes built-in serialization capabilities that transform query results into dictionaries containing only the requested fields. This helps reduce payload size and improve performance.

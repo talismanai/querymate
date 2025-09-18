@@ -117,6 +117,28 @@ Build and execute the query, returning serialized results.
     results = querymate.run(db, User)
     # Returns: [{"id": 1, "name": "John", "posts": [{"id": 1, "title": "Post 1"}]}, ...]
 
+Return pagination metadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+`run` can optionally return structured pagination metadata along with items.
+
+.. code-block:: python
+
+    # Ask for pagination metadata
+    results = querymate.run(db, User, return_pagination=True)
+    # Returns an object with items and pagination info:
+    # {
+    #   "items": [{"id": 1, "name": "John"}, ...],
+    #   "pagination": {
+    #       "total": 57,          # total matching records (ignores limit/offset)
+    #       "page": 2,            # current page number (1-based)
+    #       "size": 10,           # requested page size (limit)
+    #       "pages": 6,           # total pages (ceil(total/size), minimum 1)
+    #       "previous_page": 1,   # previous page number or None
+    #       "next_page": 3        # next page number or None
+    #   }
+    # }
+
 run_raw
 ~~~~~~~
 
@@ -137,6 +159,21 @@ Build and execute the query asynchronously, returning serialized results.
     async def get_users():
         results = await querymate.run_async(db, User)
         # Returns: [{"id": 1, "name": "John"}, ...]
+
+Return pagination metadata (async)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The async variant also supports returning pagination data.
+
+.. code-block:: python
+
+    async def get_users():
+        result = await querymate.run_async(db, User, return_pagination=True)
+        # Same shape as the sync variant:
+        # {
+        #   "items": [...],
+        #   "pagination": {"total": ..., "page": ..., "size": ..., "pages": ..., "previous_page": ..., "next_page": ...}
+        # }
 
 run_raw_async
 ~~~~~~~~~~~~
