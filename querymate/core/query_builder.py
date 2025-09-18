@@ -1,9 +1,7 @@
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import func
-
-from sqlalchemy import Join
+from sqlalchemy import Join, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
