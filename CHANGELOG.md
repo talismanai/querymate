@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.3] - 2025-09-19
+
+### Patch Changes
+
+Adds pagination response
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
