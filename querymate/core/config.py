@@ -34,6 +34,16 @@ class QueryMateSettings(BaseSettings):
         default="offset", description="Offset parameter name"
     )
 
+    # Pagination response defaults
+    DEFAULT_RETURN_PAGINATION: bool = Field(
+        default=False,
+        description="Default behavior for returning pagination metadata",
+    )
+    PAGINATION_PARAM_NAME: str = Field(
+        default="include_pagination",
+        description="Query parameter name for pagination metadata",
+    )
+
     # Logging configuration
     LOG_FORMAT: str = Field(
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

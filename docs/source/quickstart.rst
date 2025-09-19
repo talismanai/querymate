@@ -84,7 +84,7 @@ Next Steps
 Pagination Quickstart (Side by Side)
 ------------------------------------
 
-Use ``return_pagination=True`` to include pagination metadata alongside items.
+Enable pagination metadata via the query flag or force it via method parameter.
 
 .. list-table::
    :header-rows: 1
@@ -105,8 +105,11 @@ Use ``return_pagination=True`` to include pagination metadata alongside items.
 
      - .. code-block:: python
 
-          # Returns an object with items + pagination
-          result = querymate.run(db, User, return_pagination=True)
+          # Option A: force via method call
+          result = querymate.run(db, User, force_pagination=True)
+
+          # Option B: respect query flag
+          result2 = Querymate(include_pagination=True).run(db, User)
 
           # Example
           # {

@@ -65,16 +65,22 @@ Response Shape With Metadata
 ----------------------------
 
 When building UIs, you often need the total number of records and page navigation data.
-QueryMate can return a structured response with items and pagination metadata when you
-pass ``return_pagination=True`` to ``run``/``run_async``.
+QueryMate can return a structured response with items and pagination metadata. You can enable it via:
+
+* Query parameter (respected by default): ``{"include_pagination": true}``
+* Instance flag: ``Querymate(include_pagination=True)``
+* Method override: ``force_pagination=True/False`` on ``run``/``run_async``
 
 .. code-block:: python
 
-    # Sync
-    result = querymate.run(db, User, return_pagination=True)
+    # Sync: force pagination regardless of instance flag
+    result = querymate.run(db, User, force_pagination=True)
 
-    # Async
-    result = await querymate.run_async(db, User, return_pagination=True)
+    # Async: force pagination
+    result = await querymate.run_async(db, User, force_pagination=True)
+
+    # Respect query flag (no force):
+    result2 = Querymate(include_pagination=True).run(db, User)
 
 The returned object has the following shape:
 
@@ -102,3 +108,10 @@ Field semantics:
 * ``pages``: Total number of pages (at least ``1`` even if ``total`` is ``0``)
 * ``previous_page``: Previous page number or ``null`` on first page
 * ``next_page``: Next page number or ``null`` on last page
+
+Precedence
+----------
+
+* ``force_pagination=True``: always include pagination
+* ``force_pagination=False``: never include pagination
+* ``force_pagination=None`` (default): respect ``include_pagination`` (default is configurable)

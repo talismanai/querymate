@@ -170,14 +170,19 @@ async def get_users(
 
 ### Pagination Metadata Response
 
-In addition to plain lists, you can request a structured response with pagination metadata
-by passing `return_pagination=True` to `run`/`run_async`:
+In addition to plain lists, you can include pagination metadata alongside items.
+Enable it via the query flag or force it via the method parameter:
 
 ```python
-result = query.run(db, User, return_pagination=True)
+# Force via method
+result = query.run(db, User, force_pagination=True)
 # Or async:
-# result = await query.run_async(db, User, return_pagination=True)
+# result = await query.run_async(db, User, force_pagination=True)
 
+# Respect the query flag / instance setting
+result2 = Querymate(include_pagination=True).run(db, User)
+
+# Response shape
 # {
 #   "items": [{"id": 1, "name": "John"}, ...],
 #   "pagination": {
@@ -191,8 +196,10 @@ result = query.run(db, User, return_pagination=True)
 # }
 ```
 
-This is useful for UIs that need total counts and navigation controls while
-keeping the same query building API.
+Query flag name and default behavior are configurable (see settings):
+
+- `PAGINATION_PARAM_NAME` (default: `include_pagination`)
+- `DEFAULT_RETURN_PAGINATION` (default: `False`)
 
 ### Serialization
 

@@ -120,13 +120,17 @@ Build and execute the query, returning serialized results.
 Return pagination metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-`run` can optionally return structured pagination metadata along with items.
+`run` can optionally return structured pagination metadata along with items. You can enable it via the query payload or force it via method parameter.
 
 .. code-block:: python
 
-    # Ask for pagination metadata
-    results = querymate.run(db, User, return_pagination=True)
-    # Returns an object with items and pagination info:
+    # Option 1: force via method call
+    results = querymate.run(db, User, force_pagination=True)
+    # Option 2: respect the query flag
+    querymate = Querymate(include_pagination=True)
+    results = querymate.run(db, User)  # will include pagination
+
+    # Response shape:
     # {
     #   "items": [{"id": 1, "name": "John"}, ...],
     #   "pagination": {
@@ -168,7 +172,10 @@ The async variant also supports returning pagination data.
 .. code-block:: python
 
     async def get_users():
-        result = await querymate.run_async(db, User, return_pagination=True)
+        # Force
+        result = await querymate.run_async(db, User, force_pagination=True)
+        # Or respect query flag
+        result2 = await Querymate(include_pagination=True).run_async(db, User)
         # Same shape as the sync variant:
         # {
         #   "items": [...],

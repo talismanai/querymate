@@ -93,6 +93,11 @@ class Querymate(BaseModel):
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
     )
+    include_pagination: bool = Field(  # type: ignore[literal-required]
+        default=settings.DEFAULT_RETURN_PAGINATION,
+        description="Include pagination metadata in response",
+        alias=settings.PAGINATION_PARAM_NAME,
+    )
 
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
@@ -211,7 +216,11 @@ class Querymate(BaseModel):
         return query_builder.fetch(db, model)
 
     def run(
-        self, db: Session, model: type[T], *, return_pagination: bool = False
+        self,
+        db: Session,
+        model: type[T],
+        *,
+        force_pagination: bool | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """Build and execute the query based on the parameters.
 
@@ -244,14 +253,24 @@ class Querymate(BaseModel):
         data = query_builder.fetch(db, model)
         serialized = query_builder.serialize(data)
 
-        if not return_pagination:
+        effective_pagination = (
+            force_pagination
+            if force_pagination is not None
+            else self.include_pagination
+        )
+
+        if not effective_pagination:
             return serialized
 
         total = query_builder.count(db)
         return {"items": serialized, "pagination": self._pagination(total)}
 
     async def run_async(
-        self, db: AsyncSession, model: type[T], *, return_pagination: bool = False
+        self,
+        db: AsyncSession,
+        model: type[T],
+        *,
+        force_pagination: bool | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """Build and execute the query asynchronously based on the parameters.
 
@@ -284,7 +303,13 @@ class Querymate(BaseModel):
         data = await query_builder.fetch_async(db, model)
         serialized = query_builder.serialize(data)
 
-        if not return_pagination:
+        effective_pagination = (
+            force_pagination
+            if force_pagination is not None
+            else self.include_pagination
+        )
+
+        if not effective_pagination:
             return serialized
 
         total = await query_builder.count_async(db)
