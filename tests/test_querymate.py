@@ -396,6 +396,7 @@ def test_serialize_simple_object(db: Session) -> None:
     querymate = Querymate(select=["id", "name"])
     serialized = querymate.run(db=db, model=User)
 
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {"id": 1, "name": "John"}
 
@@ -418,6 +419,7 @@ def test_serialize_with_relationships(db: Session) -> None:
     querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
     serialized = querymate.run(db=db, model=User)
 
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {
         "id": 1,
@@ -444,6 +446,7 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
     querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
     serialized = querymate.run(db=db, model=User)
 
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {
         "id": 1,
@@ -460,6 +463,7 @@ async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
 
     querymate = Querymate(select=["id", "name"])
     serialized = await querymate.run_async(async_db, User)
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {"id": 1, "name": "John"}
 
@@ -481,6 +485,7 @@ async def test_serialize_with_relationships_async(async_db: AsyncSession) -> Non
 
     querymate = Querymate(select=["id", "name", {"posts": ["id", "title"]}])
     serialized = await querymate.run_async(async_db, User)
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {
         "id": 1,
@@ -508,6 +513,7 @@ async def test_serialize_with_non_list_relationships_async(
 
     querymate = Querymate(select=["id", "title", {"user": ["id", "name"]}])
     serialized = await querymate.run_async(async_db, Post)
+    assert isinstance(serialized, list)
     assert len(serialized) == 1
     assert serialized[0] == {
         "id": 1,

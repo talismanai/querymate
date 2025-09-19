@@ -9,7 +9,7 @@ T = TypeVar("T")
 
 class PaginationInfo(BaseModel):
     """Pagination metadata for query results."""
-    
+
     total: int
     page: int
     size: int
@@ -20,7 +20,7 @@ class PaginationInfo(BaseModel):
 
 class PaginatedResponse(BaseModel, Generic[T]):
     """Response containing paginated data with metadata."""
-    
+
     items: list[T]
     pagination: PaginationInfo
 
@@ -28,9 +28,10 @@ class PaginatedResponse(BaseModel, Generic[T]):
 # Type alias for flexible response that can be either paginated or just items
 QuerymateResponse = list[dict[str, Any]] | dict[str, Any]
 
+
 # More specific type for when we know the structure
 class QuerymatePaginatedResponse(BaseModel):
     """Response structure when pagination is included."""
-    
+
     items: list[dict[str, Any]]
     pagination: PaginationInfo

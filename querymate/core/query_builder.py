@@ -492,7 +492,7 @@ class QueryBuilder:
         Returns:
             int: Total number of matching records.
         """
-        mapper = inspect(self.model)
+        mapper: Mapper = inspect(self.model)
         pk_col = next(col for col in mapper.primary_key)
 
         count_query = select(func.count(func.distinct(pk_col)))
@@ -503,15 +503,14 @@ class QueryBuilder:
             if filters:
                 count_query = count_query.where(*filters)
 
+        # For sync sessions, exec() returns ScalarResult; use one()/first()
+        result_obj = db.exec(count_query)
         try:
-            result = db.exec(count_query).one()  # type: ignore[call-arg]
+            value_sync: int = result_obj.one()
+            return int(value_sync)
         except Exception:
-            # Fallback for environments where .one() isn't available
-            result = db.exec(count_query).first()  # type: ignore[assignment]
-
-        if isinstance(result, tuple):
-            return int(result[0]) if result else 0
-        return int(result) if result is not None else 0
+            value_sync_opt: int | None = result_obj.first()
+            return int(value_sync_opt or 0)
 
     def reconstruct_object(
         self,
@@ -618,7 +617,7 @@ class QueryBuilder:
         Returns:
             int: Total number of matching records.
         """
-        mapper = inspect(self.model)
+        mapper: Mapper = inspect(self.model)
         pk_col = next(col for col in mapper.primary_key)
 
         count_query = select(func.count(func.distinct(pk_col)))
@@ -631,7 +630,7 @@ class QueryBuilder:
         results = await db.execute(count_query)
         # Prefer scalar_one if available; otherwise fall back to scalar/first
         try:
-            value = results.scalar_one()
+            value_async: int | None = results.scalar_one()
         except Exception:
-            value = results.scalar()
-        return int(value or 0)
+            value_async = results.scalar()
+        return int(value_async or 0)
