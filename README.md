@@ -168,6 +168,39 @@ async def get_users(
     return await query.run_async(db, User)
 ```
 
+### Pagination Metadata Response
+
+In addition to plain lists, you can include pagination metadata alongside items.
+Enable it via the query flag or force it via the method parameter:
+
+```python
+# Force via method
+result = query.run(db, User, force_pagination=True)
+# Or async:
+# result = await query.run_async(db, User, force_pagination=True)
+
+# Respect the query flag / instance setting
+result2 = Querymate(include_pagination=True).run(db, User)
+
+# Response shape
+# {
+#   "items": [{"id": 1, "name": "John"}, ...],
+#   "pagination": {
+#     "total": 57,
+#     "page": 2,
+#     "size": 10,
+#     "pages": 6,
+#     "previous_page": 1,
+#     "next_page": 3
+#   }
+# }
+```
+
+Query flag name and default behavior are configurable (see settings):
+
+- `PAGINATION_PARAM_NAME` (default: `include_pagination`)
+- `DEFAULT_RETURN_PAGINATION` (default: `False`)
+
 ### Serialization
 
 QueryMate includes built-in serialization capabilities that transform query results into dictionaries containing only the requested fields. This helps reduce payload size and improve performance.

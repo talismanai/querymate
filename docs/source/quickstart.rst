@@ -79,3 +79,50 @@ Next Steps
 - Read the :doc:`usage/index` guide for detailed information
 - Check out the :doc:`examples/index` for more complex scenarios
 - Review the :doc:`api/index` for complete API reference 
+
+
+Pagination Quickstart (Side by Side)
+------------------------------------
+
+Enable pagination metadata via the query flag or force it via method parameter.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Plain List
+     - With Pagination Metadata
+   * - .. code-block:: python
+
+          # Returns a plain list of items
+          items = querymate.run(db, User)
+
+          # Example
+          # [
+          #   {"id": 1, "name": "John"},
+          #   {"id": 2, "name": "Jane"}
+          # ]
+
+     - .. code-block:: python
+
+          # Option A: force via method call
+          result = querymate.run(db, User, force_pagination=True)
+
+          # Option B: respect query flag
+          result2 = Querymate(include_pagination=True).run(db, User)
+
+          # Example
+          # {
+          #   "items": [
+          #     {"id": 1, "name": "John"},
+          #     {"id": 2, "name": "Jane"}
+          #   ],
+          #   "pagination": {
+          #     "total": 57,
+          #     "page": 2,
+          #     "size": 10,
+          #     "pages": 6,
+          #     "previous_page": 1,
+          #     "next_page": 3
+          #   }
+          # }

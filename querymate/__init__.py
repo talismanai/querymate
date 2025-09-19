@@ -62,6 +62,10 @@ from .core.filter import StartsWithPredicate as StartsWithPredicate
 from .core.filter import TruePredicate as TruePredicate
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
+from .types import PaginatedResponse as PaginatedResponse
+from .types import PaginationInfo as PaginationInfo
+from .types import QuerymatePaginatedResponse as QuerymatePaginatedResponse
+from .types import QuerymateResponse as QuerymateResponse
 
 # Type aliases for better IDE support
 QueryMateType: type[Querymate] = Querymate

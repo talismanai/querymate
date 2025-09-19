@@ -1,7 +1,7 @@
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import Join
+from sqlalchemy import Join, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
@@ -479,6 +479,39 @@ class QueryBuilder:
         """
         return db.exec(self.query).unique().all()  # type: ignore
 
+    def count(self, db: Session) -> int:
+        """Return the total number of root records matching current filters.
+
+        This uses a COUNT(DISTINCT <pk>) over the base model with the same
+        filter conditions. Sorting, limit, and offset are intentionally ignored
+        for the total count.
+
+        Args:
+            db (Session): The SQLModel database session.
+
+        Returns:
+            int: Total number of matching records.
+        """
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        count_query = select(func.count(func.distinct(pk_col)))
+
+        # Rebuild filters without mutating the main query
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                count_query = count_query.where(*filters)
+
+        # For sync sessions, exec() returns ScalarResult; use one()/first()
+        result_obj = db.exec(count_query)
+        try:
+            value_sync: int = result_obj.one()
+            return int(value_sync)
+        except Exception:
+            value_sync_opt: int | None = result_obj.first()
+            return int(value_sync_opt or 0)
+
     def reconstruct_object(
         self,
         model: type[T],
@@ -572,3 +605,32 @@ class QueryBuilder:
         # for AsyncSession. This warning is more relevant for synchronous sessions.
         results = await db.execute(self.query)
         return results.unique().all()  # type: ignore
+
+    async def count_async(self, db: AsyncSession) -> int:
+        """Asynchronously return the total number of root records matching filters.
+
+        Mirrors the synchronous ``count`` method.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+
+        Returns:
+            int: Total number of matching records.
+        """
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        count_query = select(func.count(func.distinct(pk_col)))
+
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                count_query = count_query.where(*filters)
+
+        results = await db.execute(count_query)
+        # Prefer scalar_one if available; otherwise fall back to scalar/first
+        try:
+            value_async: int | None = results.scalar_one()
+        except Exception:
+            value_async = results.scalar()
+        return int(value_async or 0)
