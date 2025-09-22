@@ -108,7 +108,7 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           source .venv/bin/activate
-          twine upload dist/*
+          twine upload --skip-existing dist/*
 
       - name: Create Git tag
         if: github.event_name == 'workflow_dispatch' && success()
