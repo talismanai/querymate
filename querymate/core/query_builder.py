@@ -1,7 +1,7 @@
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import Join, func
+from sqlalchemy import Join, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
@@ -204,7 +204,9 @@ class QueryBuilder:
             self.query = self.query.where(*filters)
         return self
 
-    def apply_sort(self, sort: list[str] | None = None) -> "QueryBuilder":
+    def apply_sort(
+        self, sort: list[str | dict[str, Any]] | None = None
+    ) -> "QueryBuilder":
         """Apply sorting to the query.
 
         Args:
@@ -220,16 +222,63 @@ class QueryBuilder:
         """
         if not sort:
             return self
-        self.sort = sort
+        self.sort = sort  # type: ignore[assignment]
         for sort_param in sort:
-            if sort_param.startswith("-"):
-                field = sort_param[1:]
+            # Custom value order: accept {"field": [values...]} or {"field": {"values": [...]} or {"field": {"order": [...]}}
+            if isinstance(sort_param, dict):
+                # Two shapes supported: {"field": [..]} or {"field": {"values": [..]}} or {"field": {"order": [..]}}
+                if len(sort_param) == 1:
+                    field_key = next(iter(sort_param.keys()))
+                    values_candidate = sort_param[field_key]
+                    if isinstance(values_candidate, dict):
+                        order_values = values_candidate.get(
+                            "values"
+                        ) or values_candidate.get("order")
+                    else:
+                        order_values = values_candidate
+
+                    if not isinstance(order_values, list):
+                        logger.warning(
+                            "Invalid custom sort specification for %s; expected list of values",
+                            field_key,
+                        )
+                        continue
+
+                    # Resolve the column attribute from field path
+                    field_parts = field_key.split(".")
+                    current_entity = self.query.column_descriptions[0]["entity"]
+                    column_attr = None
+                    for i, part in enumerate(field_parts):
+                        if i == len(field_parts) - 1:
+                            column_attr = getattr(current_entity, part)
+                        else:
+                            current_entity = getattr(
+                                current_entity, part
+                            ).property.mapper.class_
+
+                    if column_attr is None:
+                        continue
+
+                    # Build CASE expression mapping listed values to ranks
+                    whens = [(column_attr == v, i) for i, v in enumerate(order_values)]
+                    case_expr = case(*whens, else_=len(whens) + 1)
+                    self.query = self.query.order_by(case_expr)
+                    continue
+
+                # If dict has unexpected shape, skip with warning
+                logger.warning("Unsupported sort dict format: %s", sort_param)
+                continue
+
+            # String-based sort with optional +/- prefix
+            sort_str: str = sort_param
+            if sort_str.startswith("-"):
+                field = sort_str[1:]
                 direction = "desc"
-            elif sort_param.startswith("+"):
-                field = sort_param[1:]
+            elif sort_str.startswith("+"):
+                field = sort_str[1:]
                 direction = "asc"
             else:
-                field = sort_param
+                field = sort_str
                 direction = "asc"
 
             # Handle nested fields (e.g. "posts.title")
@@ -313,7 +362,7 @@ class QueryBuilder:
         self,
         select: list[str | dict[str, list[str]]] | None = None,
         filter: dict[str, Any] | None = None,
-        sort: list[str] | None = None,
+        sort: list[str | dict[str, Any]] | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> "QueryBuilder":

@@ -199,6 +199,34 @@ Combine conditions explicitly with `and` and `or` in the `filter` block — full
 
 Direct equality without an operator remains supported, e.g. `{"filter":{"status": 1}}`.
 
+### Sorting
+
+Basic sorting:
+
+```python
+# Ascending by name
+Querymate(sort=["name"]).run_raw(db, User)
+
+# Descending by age, then ascending by name
+Querymate(sort=["-age", "name"]).run_raw(db, User)
+```
+
+Custom value order (e.g., status pipelines):
+
+```python
+# Bring these status values first in this order; others later
+Querymate(sort=[{"status": ["pending", "active", "inactive"]}]).run_raw(db, Ticket)
+
+# Equivalent explicit form
+Querymate(sort=[{"status": {"values": ["pending", "active", "inactive"]}}]).run_raw(db, Ticket)
+
+# Combine with secondary sort to order remaining values
+Querymate(sort=[{"status": ["pending", "active", "inactive"]}, "-created_at"]).run_raw(db, Ticket)
+
+# Custom order on related field using dot notation
+Querymate(sort=[{"posts.visibility": ["private", "internal", "public"]}]).run_raw(db, User)
+```
+
 ### Pagination Metadata Response
 
 In addition to plain lists, you can include pagination metadata alongside items.

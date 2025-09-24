@@ -75,7 +75,7 @@ class Querymate(BaseModel):
         description="Filter conditions for the query",
         alias=settings.FILTER_PARAM_NAME,
     )
-    sort: list[str] | None = Field(  # type: ignore[literal-required]
+    sort: list[Any] | None = Field(   # type: ignore[literal-required]
         default=[],
         description="List of fields to sort by",
         alias=settings.SORT_PARAM_NAME,
