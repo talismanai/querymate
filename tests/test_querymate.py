@@ -206,7 +206,9 @@ def test_run_with_ne_and_gt(db: Session) -> None:
     db.add_all(users)
     db.commit()
 
-    querymate = Querymate(select=["id", "name", "age"], filter={"name": {"ne": "John"}, "age": {"gt": 20}})
+    querymate = Querymate(
+        select=["id", "name", "age"], filter={"name": {"ne": "John"}, "age": {"gt": 20}}
+    )
     results = querymate.run_raw(db, User)
 
     assert len(results) == 1
@@ -321,7 +323,10 @@ def test_querymate_run_with_or_same_property(db: Session) -> None:
     db.add_all(users)
     db.commit()
 
-    q = Querymate(select=["id", "name", "age"], filter={"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]})
+    q = Querymate(
+        select=["id", "name", "age"],
+        filter={"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]},
+    )
     results = q.run_raw(db, User)
     ages = sorted([u.age for u in results])
     assert ages == [25, 30]

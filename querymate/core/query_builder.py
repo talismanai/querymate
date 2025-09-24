@@ -1,7 +1,7 @@
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import Join, func, case
+from sqlalchemy import Join, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
@@ -204,7 +204,9 @@ class QueryBuilder:
             self.query = self.query.where(*filters)
         return self
 
-    def apply_sort(self, sort: list[str | dict[str, Any]] | None = None) -> "QueryBuilder":
+    def apply_sort(
+        self, sort: list[str | dict[str, Any]] | None = None
+    ) -> "QueryBuilder":
         """Apply sorting to the query.
 
         Args:
@@ -229,9 +231,9 @@ class QueryBuilder:
                     field_key = next(iter(sort_param.keys()))
                     values_candidate = sort_param[field_key]
                     if isinstance(values_candidate, dict):
-                        order_values = values_candidate.get("values") or values_candidate.get(
-                            "order"
-                        )
+                        order_values = values_candidate.get(
+                            "values"
+                        ) or values_candidate.get("order")
                     else:
                         order_values = values_candidate
 
@@ -250,9 +252,9 @@ class QueryBuilder:
                         if i == len(field_parts) - 1:
                             column_attr = getattr(current_entity, part)
                         else:
-                            current_entity = (
-                                getattr(current_entity, part).property.mapper.class_
-                            )
+                            current_entity = getattr(
+                                current_entity, part
+                            ).property.mapper.class_
 
                     if column_attr is None:
                         continue
