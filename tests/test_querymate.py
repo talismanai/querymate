@@ -245,6 +245,24 @@ def test_run_with_ne_and_in_and_relationship_filter(db: Session) -> None:
     assert "Python" in res[0].posts[0].title
 
 
+def test_run_sort_with_custom_value_order(db: Session) -> None:
+    users = [
+        User(id=1, name="Alice", is_active=True, email="a@ex.com", age=30),
+        User(id=2, name="Bob", is_active=True, email="b@ex.com", age=25),
+        User(id=3, name="Zoe", is_active=True, email="z@ex.com", age=20),
+        User(id=4, name="Carl", is_active=True, email="c@ex.com", age=22),
+    ]
+    db.add_all(users)
+    db.commit()
+
+    # Bring Zoe first, then Alice, then Bob; others later
+    q = Querymate(select=["id", "name"], sort=[{"name": ["Zoe", "Alice", "Bob"]}])
+    res = q.run_raw(db, User)
+    names = [u.name for u in res]
+    # Must start with Zoe, Alice, Bob in this order; others follow
+    assert names[:3] == ["Zoe", "Alice", "Bob"]
+
+
 def test_querymate_from_qs_with_nested_filters() -> None:
     """Test creating Querymate instance from query string with nested filters."""
     query_params = QueryParams(

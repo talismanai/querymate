@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import case
 from sqlmodel import Session, SQLModel, create_engine, desc, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
@@ -284,6 +285,20 @@ def test_limit() -> None:
     assert str(
         query_builder.query.compile(compile_kwargs={"literal_binds": True})
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+
+def test_sort_with_custom_value_order() -> None:
+    """Sort using custom value order via CASE expression."""
+    qb = QueryBuilder(User)
+    qb.apply_select(["id", "name"]).apply_sort([{ "name": ["Zoe", "Alice", "Bob"] }])
+
+    # Expected CASE ordering
+    expected = select(User.id, User.name).order_by(
+        case((User.name == "Zoe", 0), (User.name == "Alice", 1), (User.name == "Bob", 2), else_=4)
+    )
+    assert str(qb.query.compile(compile_kwargs={"literal_binds": True})) == str(
+        expected.compile(compile_kwargs={"literal_binds": True})
+    )
 
 
 def test_limit_with_negative_value() -> None:
