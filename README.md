@@ -262,6 +262,28 @@ raw_results = query.run_raw(db, User)
 # [User(id=1, name="John", posts=[Post(id=1, title="Post 1"), Post(id=2, title="Post 2")])]
 ```
 
+### Exclude related items by status
+
+To exclude related rows where a field does not match a value, filter on the related field using dot notation. This filters the joined rows while keeping the root records that still have matching related rows.
+
+```python
+# Keep only posts with status == "published"
+querymate = Querymate(
+    select=["id", "name", {"posts": ["id", "title", "status"]}],
+    filter={"posts.status": {"eq": "published"}},
+)
+results = querymate.run(db, User)
+
+# Exclude posts where status != "archived" (keep all except archived)
+querymate = Querymate(
+    select=["id", "name", {"posts": ["id", "title", "status"]}],
+    filter={"posts.status": {"ne": "archived"}},
+)
+results = querymate.run(db, User)
+```
+
+Note: QueryMate currently uses inner joins for relationships. Root rows without any matching related rows will be filtered out. If you need to include root rows with an empty related list, left outer joins are not yet configurable.
+
 ---
 
 ## 🛠️ Development Guide

@@ -196,6 +196,57 @@ def test_run(db: Session) -> None:
     assert reconstructed_user1.posts[0].model_dump() == {"id": 1, "title": "Post 1"}
 
 
+def test_run_with_ne_and_gt(db: Session) -> None:
+    """Combine NE with GT on different root fields."""
+    users = [
+        User(id=1, name="John", is_active=True, email="john@example.com", age=30),
+        User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25),
+        User(id=3, name="Jack", is_active=False, email="jack@example.com", age=19),
+    ]
+    db.add_all(users)
+    db.commit()
+
+    querymate = Querymate(
+        select=["id", "name", "age"], filter={"name": {"ne": "John"}, "age": {"gt": 20}}
+    )
+    results = querymate.run_raw(db, User)
+
+    assert len(results) == 1
+    assert results[0].name == "Jane"
+    assert results[0].age == 25
+
+
+def test_run_with_ne_and_in_and_relationship_filter(db: Session) -> None:
+    """NE works together with IN and a relationship filter."""
+    u1 = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
+    u2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25)
+    u3 = User(id=3, name="Jill", is_active=True, email="jill@example.com", age=22)
+    db.add_all([u1, u2, u3])
+    db.commit()
+
+    p1 = Post(id=1, title="Python Tips", content="C1", user_id=1)
+    p2 = Post(id=2, title="Python Tricks", content="C2", user_id=2)
+    p3 = Post(id=3, title="Rust Intro", content="C3", user_id=3)
+    db.add_all([p1, p2, p3])
+    db.commit()
+
+    # Keep users with Python posts, exclude name == John, and restrict age to a set
+    q = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        filter={
+            "posts.title": {"cont": "Python"},
+            "name": {"ne": "John"},
+            "age": {"in": [22, 25, 99]},
+        },
+    )
+    res = q.run_raw(db, User)
+
+    assert len(res) == 1
+    assert res[0].name == "Jane"
+    assert len(res[0].posts) == 1
+    assert "Python" in res[0].posts[0].title
+
+
 def test_querymate_from_qs_with_nested_filters() -> None:
     """Test creating Querymate instance from query string with nested filters."""
     query_params = QueryParams(
@@ -254,7 +305,10 @@ def test_querymate_run_with_or_same_property(db: Session) -> None:
     db.add_all(users)
     db.commit()
 
-    q = Querymate(select=["id", "name", "age"], filter={"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]})
+    q = Querymate(
+        select=["id", "name", "age"],
+        filter={"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]},
+    )
     results = q.run_raw(db, User)
     ages = sorted([u.age for u in results])
     assert ages == [25, 30]

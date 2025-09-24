@@ -151,6 +151,36 @@ def test_filter_with_nested_fields() -> None:
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
+def test_filter_combines_ne_and_gt() -> None:
+    """QueryBuilder supports combining NE with other operators on root fields."""
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"]).apply_filter(
+        {"age": {"gt": 20}, "name": {"ne": "John"}}
+    )
+    expected_query = (
+        select(User.id, User.name).where(User.age > 20, User.name != "John")
+    )
+    assert str(
+        query_builder.query.compile(compile_kwargs={"literal_binds": True})
+    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+
+def test_filter_combines_ne_with_relationship_filter() -> None:
+    """Combine NE on root field with a relationship filter."""
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}]).apply_filter(
+        {"posts.title": {"cont": "Post"}, "name": {"ne": "John"}}
+    )
+    expected_query = (
+        select(User.id, User.name, Post.id, Post.title)
+        .where(Post.title.contains("Post"), User.name != "John")  # type: ignore
+        .join(Post)
+    )
+    assert str(
+        query_builder.query.compile(compile_kwargs={"literal_binds": True})
+    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+
 def test_filter_with_or_same_property() -> None:
     """Support OR conditions on the same property (e.g., status=1 or status=2)."""
     builder = QueryBuilder(User)

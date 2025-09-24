@@ -67,3 +67,46 @@ Best Practices
 * Consider the depth of relationship chains
 * Document relationship fields in API documentation
 * Use eager loading when appropriate 
+
+Excluding Related Items
+-----------------------
+
+You can exclude related items based on their status (or any field) by using relationship filters.
+Because QueryMate performs an inner join for selected relationships, this will filter the joined
+rows while keeping the root records that still have at least one matching related row.
+
+Example: include only posts with status = ``published`` (i.e., exclude any non-published posts):
+
+.. code-block:: text
+
+    /users?q={
+      "select": ["id", "name", {"posts": ["id", "title", "status"]}],
+      "filter": {"posts.status": {"eq": "published"}}
+    }
+
+Example: exclude posts where status is not equal to ``archived`` (i.e., keep all except archived):
+
+.. code-block:: text
+
+    /users?q={
+      "select": ["id", "name", {"posts": ["id", "title", "status"]}],
+      "filter": {"posts.status": {"ne": "archived"}}
+    }
+
+Notes:
+
+- The relationship filter applies to the joined rows. Root records that have no related rows
+  matching the filter will not be returned due to the inner join behavior. If you need to include
+  root records with an empty list of related items, you currently need a left outer join — which
+  is not yet configurable in QueryMate.
+- Combine with other operators like ``in``/``nin`` for multiple statuses.
+
+Python usage is equivalent when constructing queries programmatically:
+
+.. code-block:: python
+
+    qm = Querymate(
+        select=["id", "name", {"posts": ["id", "title", "status"]}],
+        filter={"posts.status": {"ne": "archived"}},
+    )
+    results = qm.run(db, User)
