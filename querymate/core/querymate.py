@@ -65,38 +65,38 @@ class Querymate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    select: list[FieldSelection] | None = Field(  # type: ignore[literal-required]
+    select: list[FieldSelection] | None = Field(
         default=[],
         description="Fields to include in the response",
-        alias=settings.SELECT_PARAM_NAME,
+        alias="select",
     )
-    filter: FilterCondition | None = Field(  # type: ignore[literal-required]
+    filter: FilterCondition | None = Field(
         default={},
         description="Filter conditions for the query",
-        alias=settings.FILTER_PARAM_NAME,
+        alias="filter",
     )
     sort: list[Any] | None = Field(  # accept strings or dicts for custom order
         default=[],
         description="List of fields to sort by",
-        alias=settings.SORT_PARAM_NAME,
+        alias="sort",
     )
-    limit: int | None = Field(  # type: ignore[literal-required]
+    limit: int | None = Field(
         default=settings.DEFAULT_LIMIT,
         ge=1,
         le=settings.MAX_LIMIT,
         description="Maximum number of records to return",
-        alias=settings.LIMIT_PARAM_NAME,
+        alias="limit",
     )
-    offset: int | None = Field(  # type: ignore[literal-required]
+    offset: int | None = Field(
         default=settings.DEFAULT_OFFSET,
         ge=0,
         description="Number of records to skip",
-        alias=settings.OFFSET_PARAM_NAME,
+        alias="offset",
     )
-    include_pagination: bool = Field(  # type: ignore[literal-required]
+    include_pagination: bool = Field(
         default=settings.DEFAULT_RETURN_PAGINATION,
         description="Include pagination metadata in response",
-        alias=settings.PAGINATION_PARAM_NAME,
+        alias="include_pagination",
     )
 
     @classmethod

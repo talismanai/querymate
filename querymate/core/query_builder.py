@@ -362,7 +362,7 @@ class QueryBuilder:
         self,
         select: list[str | dict[str, list[str]]] | None = None,
         filter: dict[str, Any] | None = None,
-        sort: list[str] | None = None,
+        sort: list[str | dict[str, Any]] | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> "QueryBuilder":

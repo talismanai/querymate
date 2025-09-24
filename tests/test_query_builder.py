@@ -157,8 +157,8 @@ def test_filter_combines_ne_and_gt() -> None:
     query_builder.apply_select(["id", "name"]).apply_filter(
         {"age": {"gt": 20}, "name": {"ne": "John"}}
     )
-    expected_query = (
-        select(User.id, User.name).where(User.age > 20, User.name != "John")
+    expected_query = select(User.id, User.name).where(
+        User.age > 20, User.name != "John"
     )
     assert str(
         query_builder.query.compile(compile_kwargs={"literal_binds": True})
@@ -295,9 +295,9 @@ def test_sort_with_custom_value_order() -> None:
     # Expected CASE ordering
     expected = select(User.id, User.name).order_by(
         case(
-            (User.name == "Zoe", 0),
-            (User.name == "Alice", 1),
-            (User.name == "Bob", 2),
+            {User.name == "Zoe": 0,
+             User.name == "Alice": 1,
+             User.name == "Bob": 2},
             else_=4,
         )
     )
