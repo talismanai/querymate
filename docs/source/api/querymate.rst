@@ -218,6 +218,25 @@ Complex Sorting
     )
     results = querymate.run(db, User)
 
+Custom Value Order Sorting
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can define an explicit order for values of a field. Values listed appear first in the given order; others are ordered later.
+
+.. code-block:: python
+
+    # Bring certain status values first
+    querymate = Querymate(
+        sort=[{"status": ["pending", "active", "inactive"]}]
+    )
+    results = querymate.run(db, Ticket)
+
+    # Combine with secondary sort
+    querymate = Querymate(
+        sort=[{"status": ["pending", "active", "inactive"]}, "-created_at"]
+    )
+    results = querymate.run(db, Ticket)
+
 Field Selection with Relationships
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

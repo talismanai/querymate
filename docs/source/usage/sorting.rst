@@ -50,6 +50,56 @@ You can also sort by fields in related models using dot notation:
 
     /users?q={"sort":["posts.title"]}
 
+Custom Value Order
+------------------
+
+Sometimes you need to sort by a field using a specific value order (e.g., status pipelines). QueryMate supports a custom order syntax using a dictionary entry in the ``sort`` list.
+
+Accepted formats:
+
+.. code-block:: json
+
+    {
+      "sort": [
+        {"status": ["pending", "active", "inactive"]}
+      ]
+    }
+
+or equivalently:
+
+.. code-block:: json
+
+    {
+      "sort": [
+        {"status": {"values": ["pending", "active", "inactive"]}}
+      ]
+    }
+
+Notes:
+
+- Values listed appear first in the given order; all other values are ordered later.
+- Combine with a secondary sort for stable ordering within the “others” group if needed.
+
+Examples:
+
+- Bring statuses in a specific order:
+
+  .. code-block:: text
+
+      /tickets?q={"sort":[{"status":["pending","active","inactive"]}]}
+
+- Custom order then secondary sort by created time descending:
+
+  .. code-block:: text
+
+      /tickets?q={"sort":[{"status":["pending","active","inactive"]},"-created_at"]}
+
+- Custom order on a related field using dot notation:
+
+  .. code-block:: text
+
+      /users?q={"sort":[{"posts.visibility":["private","internal","public"]}]}
+
 Default Behavior
 --------------
 
