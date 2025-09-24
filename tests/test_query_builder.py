@@ -151,6 +151,38 @@ def test_filter_with_nested_fields() -> None:
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
+def test_filter_with_or_same_property() -> None:
+    """Support OR conditions on the same property (e.g., status=1 or status=2)."""
+    builder = QueryBuilder(User)
+    builder.apply_select(["id", "name"]).apply_filter(
+        {"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]}
+    )
+    compiled = str(builder.query.compile(compile_kwargs={"literal_binds": True}))
+    assert '"user".age = 25' in compiled
+    assert '"user".age = 30' in compiled
+    assert " OR " in compiled
+
+
+def test_filter_with_and_or_multiple_properties() -> None:
+    """Support mixing AND/OR across multiple properties."""
+    builder = QueryBuilder(User)
+    builder.apply_select(["id", "name"]).apply_filter(
+        {
+            "and": [
+                {"or": [{"age": {"gt": 18}}, {"age": {"eq": 18}}]},
+                {"name": {"cont": "J"}},
+            ]
+        }
+    )
+    compiled = str(builder.query.compile(compile_kwargs={"literal_binds": True}))
+    # (age > 18 OR age = 18) AND name contains 'J'
+    assert '"user".age > 18' in compiled or '"user".age >= 19' in compiled
+    assert '"user".age = 18' in compiled
+    assert " OR " in compiled
+    assert " AND " in compiled
+    assert "LIKE '%' || 'J' || '%'" in compiled
+
+
 # ================================
 # Test cases for sort
 # ================================

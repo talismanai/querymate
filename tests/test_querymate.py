@@ -244,6 +244,46 @@ def test_querymate_to_qs_with_nested_filters() -> None:
     assert "18" in query_string
 
 
+def test_querymate_run_with_or_same_property(db: Session) -> None:
+    """Querymate should support OR conditions on the same property."""
+    users = [
+        User(id=1, name="A", is_active=True, email="a@ex.com", age=25),
+        User(id=2, name="B", is_active=True, email="b@ex.com", age=30),
+        User(id=3, name="C", is_active=True, email="c@ex.com", age=35),
+    ]
+    db.add_all(users)
+    db.commit()
+
+    q = Querymate(select=["id", "name", "age"], filter={"or": [{"age": {"eq": 25}}, {"age": {"eq": 30}}]})
+    results = q.run_raw(db, User)
+    ages = sorted([u.age for u in results])
+    assert ages == [25, 30]
+
+
+def test_querymate_run_with_and_or_multiple_properties(db: Session) -> None:
+    """Support mixing AND and OR across properties via Querymate."""
+    users = [
+        User(id=1, name="John", is_active=True, email="j@ex.com", age=18),
+        User(id=2, name="Jake", is_active=True, email="jk@ex.com", age=19),
+        User(id=3, name="Mary", is_active=True, email="m@ex.com", age=25),
+    ]
+    db.add_all(users)
+    db.commit()
+
+    q = Querymate(
+        select=["id", "name", "age"],
+        filter={
+            "and": [
+                {"or": [{"age": {"gt": 18}}, {"age": {"eq": 18}}]},
+                {"name": {"cont": "J"}},
+            ]
+        },
+    )
+    results = q.run_raw(db, User)
+    names = sorted([u.name for u in results])
+    assert names == ["Jake", "John"]
+
+
 def test_querymate_run_with_nested_filters(db: Session) -> None:
     """Test running a query with nested filters."""
     # Create test data

@@ -168,6 +168,37 @@ async def get_users(
     return await query.run_async(db, User)
 ```
 
+### Logical Filters (AND/OR)
+
+Combine conditions explicitly with `and` and `or` in the `filter` block — fully backward compatible with field-based filters:
+
+- OR on the same property (e.g., status = 1 OR status = 2):
+
+  ```text
+  /users?q={"filter":{"or":[{"status":{"eq":1}},{"status":{"eq":2}}]}}
+  ```
+
+  Or using `in`:
+
+  ```text
+  /users?q={"filter":{"status":{"in":[1,2]}}}
+  ```
+
+- Mixing AND and OR:
+
+  ```text
+  /users?q={
+    "filter":{
+      "and":[
+        {"or":[{"age":{"gt":18}},{"age":{"eq":18}}]},
+        {"name":{"cont":"J"}}
+      ]
+    }
+  }
+  ```
+
+Direct equality without an operator remains supported, e.g. `{"filter":{"status": 1}}`.
+
 ### Pagination Metadata Response
 
 In addition to plain lists, you can include pagination metadata alongside items.

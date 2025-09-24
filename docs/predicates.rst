@@ -202,3 +202,28 @@ Combining Conditions
             {"email": {"present": None}}
         ]
     } 
+
+You can also use ``or`` and mix nested AND/OR groups. For example, allowing multiple values for the same property with OR:
+
+.. code-block:: python
+
+    filters = {
+        "or": [
+            {"status": {"eq": 1}},
+            {"status": {"eq": 2}}
+        ]
+    }
+
+And combining with other conditions via AND:
+
+.. code-block:: python
+
+    filters = {
+        "and": [
+            {"or": [
+                {"age": {"gt": 18}},
+                {"age": {"eq": 18}},
+            ]},
+            {"name": {"cont": "J"}}
+        ]
+    }
