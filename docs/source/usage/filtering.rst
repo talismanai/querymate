@@ -163,4 +163,24 @@ You can also filter on related models:
 
 .. code-block:: text
 
-    /users?q={"filter":{"posts.title":{"cont":"Python"}}} 
+    /users?q={"filter":{"posts.title":{"cont":"Python"}}}
+
+Exclude related items by status (keep only published posts):
+
+.. code-block:: text
+
+    /users?q={
+      "select":["id","name",{"posts":["id","title","status"]}],
+      "filter":{"posts.status":{"eq":"published"}}
+    }
+
+Or exclude a specific status (keep all except archived):
+
+.. code-block:: text
+
+    /users?q={
+      "select":["id","name",{"posts":["id","title","status"]}],
+      "filter":{"posts.status":{"ne":"archived"}}
+    }
+
+Note: Relationship filtering uses inner joins; root rows without matching related rows will be omitted.
