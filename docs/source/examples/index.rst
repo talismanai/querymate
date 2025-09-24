@@ -80,6 +80,12 @@ Example with multiple filters and relationships:
         # }
         return query.run(db, Post)
 
+OR on the same property (e.g., status = 1 or status = 2):
+
+.. code-block:: text
+
+    /users?q={"filter":{"or":[{"status":{"eq":1}},{"status":{"eq":2}}]}}
+
 Nested Relationships
 -----------------
 
