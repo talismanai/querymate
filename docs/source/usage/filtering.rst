@@ -165,6 +165,38 @@ You can also filter on related models:
 
     /users?q={"filter":{"posts.title":{"cont":"Python"}}}
 
+Logical Operators (AND/OR)
+--------------------------
+
+In addition to specifying multiple fields (which composes with AND by default), you can explicitly combine conditions using ``and`` and ``or`` keys. This enables complex logic across multiple properties or even on the same property.
+
+Examples:
+
+OR on the same property (status = 1 OR status = 2):
+
+.. code-block:: text
+
+    /users?q={"filter":{"or":[{"status":{"eq":1}},{"status":{"eq":2}}]}}
+
+Equivalent using ``in``:
+
+.. code-block:: text
+
+    /users?q={"filter":{"status":{"in":[1,2]}}}
+
+Mixing AND and OR across properties:
+
+.. code-block:: text
+
+    /users?q={
+      "filter":{
+        "and":[
+          {"or":[{"age":{"gt":18}}, {"age":{"eq":18}}]},
+          {"name":{"cont":"J"}}
+        ]
+      }
+    }
+
 Exclude related items by status (keep only published posts):
 
 .. code-block:: text
@@ -184,3 +216,8 @@ Or exclude a specific status (keep all except archived):
     }
 
 Note: Relationship filtering uses inner joins; root rows without matching related rows will be omitted.
+
+Backward compatibility:
+
+- You can still specify a field directly without an explicit operator to mean equality, e.g. ``{"filter":{"status": 1}}``.
+- Existing field-based filters like ``{"filter":{"age":{"gt":25}}}`` continue to work unchanged.

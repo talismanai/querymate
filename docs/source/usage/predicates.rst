@@ -275,6 +275,22 @@ You can combine multiple predicates using logical operators:
         "name": {"start_any": ["John", "Jane"]}
     })
 
+    # OR on the same property (status = 1 OR status = 2)
+    query = QueryMate(filter={
+        "or": [
+            {"status": {"eq": 1}},
+            {"status": {"eq": 2}},
+        ]
+    })
+
+    # Mixing AND and OR across properties
+    query = QueryMate(filter={
+        "and": [
+            {"or": [{"age": {"gt": 18}}, {"age": {"eq": 18}}]},
+            {"name": {"cont": "J"}},
+        ]
+    })
+
     # Filter users with name containing "john" (case-insensitive)
     query = QueryMate(filter={
         "name": {"i_cont": "john"}
