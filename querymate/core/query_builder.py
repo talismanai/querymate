@@ -374,7 +374,7 @@ class QueryBuilder:
         Args:
             fields (list[str | dict[str, list[str]]] | None): Fields to select.
             filter (dict[str, Any] | None): Filter conditions.
-            sort (list[str] | None): Sort parameters.
+            sort (list[str | dict[str, Any]] | None): Sort parameters.
             limit (int | None): Maximum number of records.
             offset (int | None): Number of records to skip.
 
