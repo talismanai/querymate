@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.5] - 2025-09-25
+
+### Patch Changes
+
+Adds order_by value preference list
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
