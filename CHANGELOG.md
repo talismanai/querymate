@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.6] - 2025-09-26
+
+### Patch Changes
+
+Supports select with wildcards
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
