@@ -716,6 +716,73 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
     }
 
 
+def test_serialize_with_wildcard_fields(db: Session) -> None:
+    """Ensure wildcard select returns all model fields."""
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["*"])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "email": "john@example.com",
+        "age": 30,
+        "is_active": True,
+    }
+
+
+def test_serialize_with_wildcard_relationship(db: Session) -> None:
+    """Ensure wildcard select expands relationship fields."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
+    db.add(post)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["*", {"posts": ["*"]}])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "email": "john@example.com",
+        "age": 30,
+        "is_active": True,
+        "posts": [
+            {
+                "id": 1,
+                "title": "Post 1",
+                "content": "Content 1",
+                "user_id": 1,
+            }
+        ],
+    }
+
+
 async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:
     """Test serialization of a simple object with direct fields."""
     user = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
