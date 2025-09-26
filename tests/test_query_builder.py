@@ -295,9 +295,7 @@ def test_sort_with_custom_value_order() -> None:
     # Expected CASE ordering
     expected = select(User.id, User.name).order_by(
         case(
-            {User.name == "Zoe": 0,
-             User.name == "Alice": 1,
-             User.name == "Bob": 2},
+            {User.name == "Zoe": 0, User.name == "Alice": 1, User.name == "Bob": 2},
             else_=4,
         )
     )
@@ -713,6 +711,73 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
         "id": 1,
         "title": "Post 1",
         "user": {"id": 1, "name": "John"},
+    }
+
+
+def test_serialize_with_wildcard_fields(db: Session) -> None:
+    """Ensure wildcard select returns all model fields."""
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["*"])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "email": "john@example.com",
+        "age": 30,
+        "is_active": True,
+    }
+
+
+def test_serialize_with_wildcard_relationship(db: Session) -> None:
+    """Ensure wildcard select expands relationship fields."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[post],
+    )
+    db.add(post)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["*", {"posts": ["*"]}])
+    results = query_builder.fetch(db, User)
+
+    result = query_builder.serialize(results)
+    assert len(result) == 1
+    assert result[0] == {
+        "id": 1,
+        "name": "John",
+        "email": "john@example.com",
+        "age": 30,
+        "is_active": True,
+        "posts": [
+            {
+                "id": 1,
+                "title": "Post 1",
+                "content": "Content 1",
+                "user_id": 1,
+            }
+        ],
     }
 
 

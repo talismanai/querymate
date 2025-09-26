@@ -44,6 +44,21 @@ Example with relationships:
 
     /users?q={"select":["id","name",{"posts":["title","content"]}]}
 
+Wildcard Selection
+------------------
+
+Use the ``"*"`` wildcard to expand a selection to every field on a model or
+relationship:
+
+.. code-block:: json
+
+    {
+        "select": ["*", {"posts": ["*"]}]
+    }
+
+This request returns every column on ``User`` and every column on the related
+``Post`` records without needing to list them individually.
+
 Serialization Behavior
 -------------------
 

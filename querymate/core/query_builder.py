@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
@@ -85,6 +86,68 @@ class QueryBuilder:
         self.select = []
         self.filter = {}
         self.sort = []
+
+    def _normalize_select_fields(
+        self, model: type[SQLModel], fields: Sequence[FieldSelection]
+    ) -> list[FieldSelection]:
+        """Expand wildcard selections into explicit field lists.
+
+        Args:
+            model (type[SQLModel]): Model whose fields are being selected.
+            fields (list[FieldSelection]): Requested field selections.
+
+        Returns:
+            list[FieldSelection]: Normalized field selections with wildcards expanded.
+        """
+        if not fields:
+            return []
+
+        normalized_field_names: list[str] = []
+        normalized_relationships: list[dict[str, list[Any]]] = []
+
+        valid_model_fields: list[str] = list(model.model_fields.keys())
+        inspection: Mapper = inspect(model)
+        valid_relationships = inspection.relationships
+
+        for field in fields:
+            if isinstance(field, str):
+                if field == "*":
+                    normalized_field_names = sorted(valid_model_fields)
+                else:
+                    if field not in valid_model_fields:
+                        logger.warning(
+                            f"Invalid field: {field}. Valid fields: {valid_model_fields}"
+                        )
+                        if field not in normalized_field_names:
+                            normalized_field_names.append(field)
+                        continue
+                    if field not in normalized_field_names:
+                        normalized_field_names.append(field)
+            elif isinstance(field, dict):
+                for relationship_name, relationship_fields in field.items():
+                    relationship_property: RelationshipProperty | None = (
+                        valid_relationships.get(relationship_name)
+                    )
+                    if relationship_property is None:
+                        logger.warning(
+                            "Invalid relationship: %s. Valid relationships: %s",
+                            relationship_name,
+                            set(valid_relationships.keys()),
+                        )
+                        continue
+                    relationship_model: type[SQLModel] = (
+                        relationship_property.mapper.class_
+                    )
+                    normalized_rel_fields = self._normalize_select_fields(
+                        relationship_model, relationship_fields
+                    )
+                    normalized_relationships.append(
+                        {relationship_name: normalized_rel_fields}
+                    )
+
+        normalized: list[FieldSelection] = list(normalized_field_names)
+        normalized.extend(cast(list[FieldSelection], normalized_relationships))
+        return normalized
 
     def _select(
         self, model: type[SQLModel], fields: list[FieldSelection]
@@ -174,8 +237,9 @@ class QueryBuilder:
         """
         if not fields:
             fields = list(self.model.model_fields.keys())
-        self.select = fields
-        select_columns, joins = self._select(self.model, fields)
+        normalized_fields = self._normalize_select_fields(self.model, fields)
+        self.select = normalized_fields
+        select_columns, joins = self._select(self.model, normalized_fields)
         self.query = select(*select_columns)
         for join in joins:
             self.query = self.query.join(join)
