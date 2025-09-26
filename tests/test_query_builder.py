@@ -295,9 +295,7 @@ def test_sort_with_custom_value_order() -> None:
     # Expected CASE ordering
     expected = select(User.id, User.name).order_by(
         case(
-            {User.name == "Zoe": 0,
-             User.name == "Alice": 1,
-             User.name == "Bob": 2},
+            {User.name == "Zoe": 0, User.name == "Alice": 1, User.name == "Bob": 2},
             else_=4,
         )
     )

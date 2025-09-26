@@ -145,9 +145,7 @@ class QueryBuilder:
                     )
 
         normalized: list[FieldSelection] = list(normalized_field_names)
-        normalized.extend(
-            cast(list[FieldSelection], normalized_relationships)
-        )
+        normalized.extend(cast(list[FieldSelection], normalized_relationships))
         return normalized
 
     def _select(
