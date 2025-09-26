@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
@@ -87,7 +88,7 @@ class QueryBuilder:
         self.sort = []
 
     def _normalize_select_fields(
-        self, model: type[SQLModel], fields: list[FieldSelection]
+        self, model: type[SQLModel], fields: Sequence[FieldSelection]
     ) -> list[FieldSelection]:
         """Expand wildcard selections into explicit field lists.
 
