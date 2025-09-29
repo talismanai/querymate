@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.7] - 2025-09-29
+
+### Patch Changes
+
+Supports date filtering
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
