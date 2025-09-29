@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
+from datetime import UTC, date, datetime
 from typing import Any, ClassVar, TypeVar
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.sql.type_api import TypeEngine
 from sqlmodel import SQLModel
 
 from querymate.core.config import settings
@@ -583,6 +585,110 @@ class FilterBuilder:
         self.model = model
         self.resolver = resolver or DefaultFieldResolver()
 
+    def _get_column_type(self, column: InstrumentedAttribute) -> TypeEngine | None:
+        """Return the SQLAlchemy type associated with an instrumented column."""
+        column_property = getattr(column, "property", None)
+        if column_property is not None and hasattr(column_property, "columns"):
+            columns = column_property.columns
+            if columns:
+                return columns[0].type  # type: ignore[no-any-return]
+        return getattr(column, "type", None)
+
+    def _cast_value(
+        self, column: InstrumentedAttribute, operator: str, value: Any
+    ) -> Any:
+        """Cast raw filter values to match the column's Python type when possible."""
+
+        if operator in {"is_null", "is_not_null"}:
+            return value
+
+        column_type = self._get_column_type(column)
+        if column_type is None or value is None:
+            return value
+
+        if isinstance(value, list | tuple | set):
+            converted_items = [
+                self._cast_single_value(column_type, item) for item in value
+            ]
+            if isinstance(value, tuple):
+                return tuple(converted_items)
+            if isinstance(value, set):
+                return set(converted_items)
+            return converted_items
+
+        return self._cast_single_value(column_type, value)
+
+    def _cast_single_value(self, column_type: TypeEngine, value: Any) -> Any:
+        """Cast a single value to the target column type when supported."""
+
+        try:
+            python_type = column_type.python_type
+        except NotImplementedError:
+            python_type = None
+
+        if python_type is datetime:
+            casted_datetime = self._cast_to_datetime(value, column_type)
+            if casted_datetime is not None:
+                return casted_datetime
+        elif python_type is date:
+            casted_date = self._cast_to_date(value)
+            if casted_date is not None:
+                return casted_date
+
+        return value
+
+    def _cast_to_datetime(self, value: Any, column_type: TypeEngine) -> datetime | None:
+        """Attempt to cast a value to a datetime, respecting column timezone settings."""
+
+        if isinstance(value, datetime):
+            dt_value = value
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                dt_value = datetime.fromisoformat(normalized)
+            except ValueError:
+                return None
+        else:
+            return None
+
+        is_timezone_aware = bool(getattr(column_type, "timezone", False))
+
+        if is_timezone_aware:
+            if dt_value.tzinfo is None:
+                return dt_value.replace(tzinfo=UTC)
+            return dt_value
+
+        if dt_value.tzinfo is not None:
+            return dt_value.astimezone(UTC).replace(tzinfo=None)
+
+        return dt_value
+
+    def _cast_to_date(self, value: Any) -> date | None:
+        """Attempt to cast a value to a date."""
+
+        if isinstance(value, datetime):
+            return value.date()
+
+        if isinstance(value, date):
+            return value
+
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                parsed_dt = datetime.fromisoformat(normalized)
+                return parsed_dt.date()
+            except ValueError:
+                try:
+                    return date.fromisoformat(normalized)
+                except ValueError:
+                    return None
+
+        return None
+
     def build(self, filters_dict: dict) -> list[Any]:
         """Build SQLAlchemy filter expressions from a filter dictionary.
 
@@ -611,7 +717,6 @@ class FilterBuilder:
             ValueError: If an unsupported operator is used.
         """
         filters: list[Any] = []
-
         for field, condition in filters_dict.items():
             if field == "and":
                 and_conditions = []
@@ -629,10 +734,13 @@ class FilterBuilder:
                     for operator, value in condition.items():
                         if operator not in settings.FILTER_OPERATORS:
                             raise ValueError(f"Unsupported operator: {operator}")
+                        # Cast the value before applying the predicate
+                        casted_value = self._cast_value(column, operator, value)
                         predicate = Predicate.registry[operator]()
-                        filters.append(predicate.apply(column, value))
+                        filters.append(predicate.apply(column, casted_value))
                 else:
                     # Default to equality if no operator is specified
-                    filters.append(column == condition)
+                    casted_value = self._cast_value(column, "eq", condition)
+                    filters.append(column == casted_value)
 
         return filters

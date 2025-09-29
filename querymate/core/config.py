@@ -54,19 +54,66 @@ class QueryMateSettings(BaseSettings):
     # Filter operators
     FILTER_OPERATORS: list[str] = Field(
         default=[
+            # Basic comparison operators
             "eq",  # Equal to
             "ne",  # Not equal to
             "gt",  # Greater than
             "lt",  # Less than
             "gte",  # Greater than or equal to
             "lte",  # Less than or equal to
+            # String operators
             "cont",  # Contains (for strings)
             "starts_with",  # Starts with (for strings)
             "ends_with",  # Ends with (for strings)
+            # List operators
             "in",  # In list
             "nin",  # Not in list
+            # Null operators
             "is_null",  # Is null
             "is_not_null",  # Is not null
+            # Pattern matching operators
+            "matches",  # LIKE operator
+            "does_not_match",  # NOT LIKE operator
+            "matches_any",  # LIKE any of the values
+            "matches_all",  # LIKE all of the values
+            "does_not_match_any",  # NOT LIKE any of the values
+            "does_not_match_all",  # NOT LIKE all of the values
+            # Presence operators
+            "present",  # Not null and not empty
+            "blank",  # Null or empty
+            # Multiple value comparison operators
+            "lt_any",  # Less than any of the values
+            "lteq_any",  # Less than or equal to any of the values
+            "gt_any",  # Greater than any of the values
+            "gteq_any",  # Greater than or equal to any of the values
+            "lt_all",  # Less than all of the values
+            "lteq_all",  # Less than or equal to all of the values
+            "gt_all",  # Greater than all of the values
+            "gteq_all",  # Greater than or equal to all of the values
+            "not_eq_all",  # Not equal to all of the values
+            # String pattern operators
+            "start",  # Starts with pattern
+            "not_start",  # Does not start with pattern
+            "start_any",  # Starts with any of the patterns
+            "start_all",  # Starts with all of the patterns
+            "not_start_any",  # Does not start with any of the patterns
+            "not_start_all",  # Does not start with all of the patterns
+            "end",  # Ends with pattern
+            "not_end",  # Does not end with pattern
+            "end_any",  # Ends with any of the patterns
+            "end_all",  # Ends with all of the patterns
+            "not_end_any",  # Does not end with any of the patterns
+            "not_end_all",  # Does not end with all of the patterns
+            # Case-insensitive operators
+            "i_cont",  # Case-insensitive contains
+            "i_cont_any",  # Case-insensitive contains any
+            "i_cont_all",  # Case-insensitive contains all
+            "not_i_cont",  # Case-insensitive does not contain
+            "not_i_cont_any",  # Case-insensitive does not contain any
+            "not_i_cont_all",  # Case-insensitive does not contain all
+            # Boolean operators
+            "true",  # Is true
+            "false",  # Is false
         ],
         description="List of available filter operators",
     )

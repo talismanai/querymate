@@ -217,6 +217,116 @@ Or exclude a specific status (keep all except archived):
 
 Note: Relationship filtering uses inner joins; root rows without matching related rows will be omitted.
 
+DateTime and Date Filtering
+--------------------------
+
+QueryMate provides intelligent datetime and date filtering with automatic type casting and timezone handling.
+
+Supported Formats
+~~~~~~~~~~~~~~~~
+
+For datetime fields, you can use:
+
+* Python datetime objects
+* ISO format strings: ``"2023-01-15T10:30:00"``
+* ISO format with timezone: ``"2023-01-15T10:30:00+02:00"``
+* UTC with Z notation: ``"2023-01-15T10:30:00Z"``
+
+For date fields, you can use:
+
+* Python date objects
+* ISO date strings: ``"2023-01-15"``
+* Datetime strings (date part extracted): ``"2023-01-15T10:30:00"``
+
+DateTime Examples
+~~~~~~~~~~~~~~~
+
+Filter by exact datetime:
+
+.. code-block:: text
+
+    /users?q={"filter":{"created_at":{"eq":"2023-01-15T10:30:00Z"}}}
+
+Filter by date range:
+
+.. code-block:: text
+
+    /users?q={
+      "filter":{
+        "and":[
+          {"created_at":{"gte":"2023-01-01T00:00:00"}},
+          {"created_at":{"lt":"2023-02-01T00:00:00"}}
+        ]
+      }
+    }
+
+Filter for null/non-null dates:
+
+.. code-block:: text
+
+    /users?q={"filter":{"last_login":{"is_null":true}}}
+
+Filter with multiple datetime values:
+
+.. code-block:: text
+
+    /events?q={"filter":{"start_time":{"in":["2023-01-15T10:00:00","2023-01-16T10:00:00"]}}}
+
+Date-only filtering:
+
+.. code-block:: text
+
+    /users?q={"filter":{"birth_date":{"gte":"1990-01-01"}}}
+
+Timezone Handling
+~~~~~~~~~~~~~~~
+
+QueryMate automatically handles timezone conversions:
+
+* For timezone-aware columns: input values without timezone are assumed UTC
+* For timezone-naive columns: timezone-aware inputs are converted to UTC and stripped
+* All datetime strings are parsed using ISO format for consistency
+
+Complex DateTime Queries
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Find users who registered in the last 30 days:
+
+.. code-block:: text
+
+    /users?q={"filter":{"created_at":{"gte":"2023-12-01T00:00:00Z"}}}
+
+Find events scheduled for Q1 2023:
+
+.. code-block:: text
+
+    /events?q={
+      "filter":{
+        "and":[
+          {"event_date":{"gte":"2023-01-01"}},
+          {"event_date":{"lt":"2023-04-01"}}
+        ]
+      }
+    }
+
+Find active users with recent activity:
+
+.. code-block:: text
+
+    /users?q={
+      "filter":{
+        "and":[
+          {"is_active":{"eq":true}},
+          {"or":[
+            {"last_login":{"is_null":true}},
+            {"last_login":{"gte":"2023-12-01T00:00:00"}}
+          ]}
+        ]
+      }
+    }
+
+All standard comparison operators (``gt``, ``lt``, ``gte``, ``lte``, ``eq``, ``ne``) work with datetime fields, and advanced operators like ``gt_any``, ``in``, and ``nin`` support lists of datetime values.
+
 Backward compatibility:
 
 - You can still specify a field directly without an explicit operator to mean equality, e.g. ``{"filter":{"status": 1}}``.
