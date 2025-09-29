@@ -1,3 +1,4 @@
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -673,3 +674,324 @@ def test_predicate_registry() -> None:
     assert "not_i_cont_all" in Predicate.registry
     assert "true" in Predicate.registry
     assert "false" in Predicate.registry
+
+
+# ================================
+# DATETIME FILTER TESTS
+# ================================
+
+
+def test_datetime_filter_with_datetime_object() -> None:
+    """Test datetime filtering with datetime object."""
+    builder = FilterBuilder(User)
+    test_datetime = datetime(2023, 1, 15, 10, 30, 0)
+
+    filters = {"created_at": {"eq": test_datetime}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+
+
+def test_datetime_filter_with_iso_string() -> None:
+    """Test datetime filtering with ISO string."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"eq": "2023-01-15T10:30:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+
+
+def test_datetime_filter_with_iso_string_with_timezone() -> None:
+    """Test datetime filtering with ISO string including timezone."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"eq": "2023-01-15T10:30:00+02:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+
+
+def test_datetime_filter_with_utc_z_notation() -> None:
+    """Test datetime filtering with UTC Z notation."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"eq": "2023-01-15T10:30:00Z"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+
+
+def test_datetime_filter_greater_than() -> None:
+    """Test datetime filtering with greater than operator."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"gt": "2023-01-15T10:30:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+    assert ">" in str(result[0])
+
+
+def test_datetime_filter_less_than() -> None:
+    """Test datetime filtering with less than operator."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"lt": "2023-01-15T10:30:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "created_at" in str(result[0])
+    assert "<" in str(result[0])
+
+
+def test_datetime_filter_range() -> None:
+    """Test datetime filtering with range (between dates)."""
+    builder = FilterBuilder(User)
+
+    filters = {
+        "and": [
+            {"created_at": {"gte": "2023-01-01T00:00:00"}},
+            {"created_at": {"lt": "2023-02-01T00:00:00"}},
+        ]
+    }
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert isinstance(result[0], BooleanClauseList)
+    assert result[0].operator.__name__ == "and_"
+
+
+def test_datetime_filter_in_list() -> None:
+    """Test datetime filtering with in operator for multiple dates."""
+    builder = FilterBuilder(User)
+
+    filters = {
+        "created_at": {
+            "in": ["2023-01-15T10:30:00", "2023-01-16T10:30:00", "2023-01-17T10:30:00"]
+        }
+    }
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "IN" in str(result[0])
+
+
+def test_datetime_filter_is_null() -> None:
+    """Test datetime filtering with is_null operator."""
+    builder = FilterBuilder(User)
+
+    filters = {"last_login": {"is_null": True}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "IS NULL" in str(result[0])
+
+
+def test_datetime_filter_is_not_null() -> None:
+    """Test datetime filtering with is_not_null operator."""
+    builder = FilterBuilder(User)
+
+    filters = {"last_login": {"is_not_null": True}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "IS NOT NULL" in str(result[0])
+
+
+def test_date_filter_with_date_object() -> None:
+    """Test date filtering with date object."""
+    builder = FilterBuilder(User)
+    test_date = date(2023, 1, 15)
+
+    filters = {"birth_date": {"eq": test_date}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "birth_date" in str(result[0])
+
+
+def test_date_filter_with_iso_string() -> None:
+    """Test date filtering with ISO date string."""
+    builder = FilterBuilder(User)
+
+    filters = {"birth_date": {"eq": "2023-01-15"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "birth_date" in str(result[0])
+
+
+def test_date_filter_with_datetime_string() -> None:
+    """Test date filtering with datetime string (should extract date part)."""
+    builder = FilterBuilder(User)
+
+    filters = {"birth_date": {"eq": "2023-01-15T10:30:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "birth_date" in str(result[0])
+
+
+def test_date_filter_range() -> None:
+    """Test date filtering with range operators."""
+    builder = FilterBuilder(User)
+
+    filters = {
+        "and": [
+            {"birth_date": {"gte": "1990-01-01"}},
+            {"birth_date": {"lt": "2000-01-01"}},
+        ]
+    }
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert isinstance(result[0], BooleanClauseList)
+
+
+def test_datetime_filter_with_invalid_string() -> None:
+    """Test datetime filtering with invalid string (should not raise error, just pass through)."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"eq": "invalid-date-string"}}
+    result = builder.build(filters)
+
+    # Should not raise an error, just pass the value through
+    assert len(result) == 1
+
+
+def test_datetime_filter_complex_conditions() -> None:
+    """Test complex datetime filtering with multiple conditions."""
+    builder = FilterBuilder(User)
+
+    filters = {
+        "and": [
+            {"created_at": {"gte": "2023-01-01T00:00:00"}},
+            {"created_at": {"lt": "2023-12-31T23:59:59"}},
+            {
+                "or": [
+                    {"last_login": {"is_null": True}},
+                    {"last_login": {"gt": "2023-06-01T00:00:00"}},
+                ]
+            },
+        ]
+    }
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert isinstance(result[0], BooleanClauseList)
+
+
+def test_datetime_filter_any_predicate() -> None:
+    """Test datetime filtering with gt_any predicate."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"gt_any": ["2023-01-01T00:00:00", "2023-06-01T00:00:00"]}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "OR" in str(result[0])
+
+
+def test_datetime_filter_all_predicate() -> None:
+    """Test datetime filtering with gt_all predicate."""
+    builder = FilterBuilder(User)
+
+    filters = {"created_at": {"gt_all": ["2023-01-01T00:00:00", "2023-02-01T00:00:00"]}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "AND" in str(result[0])
+
+
+def test_nested_datetime_filter() -> None:
+    """Test datetime filtering on nested relationships."""
+    builder = FilterBuilder(User)
+
+    filters = {"posts.created_at": {"gte": "2023-01-01T00:00:00"}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    # The result should contain a filter expression for the nested field
+
+
+def test_datetime_casting_preserves_timezone_awareness() -> None:
+    """Test that timezone-aware datetime values are properly handled."""
+    builder = FilterBuilder(User)
+
+    # Test with timezone-aware datetime
+    tz_datetime = datetime(2023, 1, 15, 10, 30, 0, tzinfo=UTC)
+    filters = {"created_at": {"eq": tz_datetime}}
+    result = builder.build(filters)
+
+    assert len(result) == 1
+
+
+def test_datetime_casting_with_list_values() -> None:
+    """Test datetime casting with list values (for in, gt_any, etc.)."""
+    builder = FilterBuilder(User)
+
+    filters = {
+        "created_at": {
+            "in": [
+                datetime(2023, 1, 15, 10, 30, 0),
+                "2023-01-16T10:30:00",
+                "2023-01-17T10:30:00Z",
+            ]
+        }
+    }
+    result = builder.build(filters)
+
+    assert len(result) == 1
+    assert "IN" in str(result[0])
+
+
+def test_datetime_casting_edge_cases() -> None:
+    """Test datetime casting edge cases."""
+    builder = FilterBuilder(User)
+
+    # Test with None value
+    filters = {"last_login": {"eq": None}}
+    result = builder.build(filters)
+    assert len(result) == 1
+
+    # Test with empty string
+    filters_empty: dict[str, dict[str, str]] = {"created_at": {"eq": ""}}
+    result = builder.build(filters_empty)
+    assert len(result) == 1
+
+
+def test_mongodb_date_object_casting() -> None:
+    """Test MongoDB-style $date object casting for datetime fields."""
+    builder = FilterBuilder(User)
+
+    # Test with $date object for datetime field
+    filters = {"created_at": {"gte": {"$date": "2023-01-15T10:30:00Z"}}}
+    result = builder.build(filters)
+    assert len(result) == 1
+
+    # Test with $date object for date field
+    filters = {"birth_date": {"eq": {"$date": "1990-05-15T00:00:00Z"}}}
+    result = builder.build(filters)
+    assert len(result) == 1
+
+    # Test with list of $date objects
+    filters_list: dict[str, dict[str, list[dict[str, str]]]] = {
+        "created_at": {
+            "in": [{"$date": "2023-01-15T10:30:00Z"}, {"$date": "2023-01-16T10:30:00Z"}]
+        }
+    }
+    result = builder.build(filters_list)
+    assert len(result) == 1
+
+    # Test various operators with $date objects
+    operators = ["eq", "ne", "gt", "gte", "lt", "lte"]
+    for op in operators:
+        filters = {"created_at": {op: {"$date": "2023-01-15T10:30:00Z"}}}
+        result = builder.build(filters)
+        assert len(result) == 1, f"Failed for operator: {op}"
