@@ -84,7 +84,7 @@ def test_to_qs() -> None:
 
     assert (
         qs
-        == "q=%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%7D"
+        == "q=%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%7D"
     )
 
 
@@ -99,7 +99,7 @@ def test_to_query_param() -> None:
     qp = querymate.to_query_param()
     assert (
         qp
-        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%7D"
+        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%7D"
     )
 
 

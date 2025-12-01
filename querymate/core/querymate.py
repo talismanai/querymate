@@ -1,5 +1,5 @@
 import json
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Request
@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
 from querymate.core.config import settings
+from querymate.core.grouping import (
+    GroupByConfig,
+    GroupedResponse,
+    GroupKeyExtractor,
+    GroupResult,
+)
 from querymate.core.query_builder import QueryBuilder
 
 T = TypeVar("T", bound=SQLModel)
@@ -16,6 +22,7 @@ T = TypeVar("T", bound=SQLModel)
 # Type aliases for better readability
 FieldSelection = str | dict[str, list[str]]
 FilterCondition = dict[str, Any]
+GroupByParam = str | dict[str, Any]
 
 
 class Querymate(BaseModel):
@@ -97,6 +104,11 @@ class Querymate(BaseModel):
         default=settings.DEFAULT_RETURN_PAGINATION,
         description="Include pagination metadata in response",
         alias=settings.PAGINATION_PARAM_NAME,
+    )
+    group_by: GroupByParam | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description="Group results by field. Can be a string or dict with field, granularity, tz_offset/timezone",
+        alias=settings.GROUP_BY_PARAM_NAME,
     )
 
     @classmethod
@@ -337,3 +349,265 @@ class Querymate(BaseModel):
             offset=self.offset,
         )
         return await query_builder.fetch_async(db, model)
+
+    # -------------------------------------------------------------------------
+    # Grouped Query Methods
+    # -------------------------------------------------------------------------
+
+    def _get_group_config(self) -> GroupByConfig:
+        """Parse group_by parameter into GroupByConfig.
+
+        Returns:
+            GroupByConfig instance.
+
+        Raises:
+            ValueError: If group_by is not set.
+        """
+        if self.group_by is None:
+            raise ValueError("group_by parameter is required for grouped queries")
+        return GroupByConfig.from_param(self.group_by)
+
+    def run_grouped(
+        self,
+        db: Session,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Build and execute a grouped query based on the parameters.
+
+        Groups results by the specified field. Each group contains items paginated
+        by the limit parameter. The total items across all groups is capped by MAX_LIMIT.
+
+        Args:
+            db (Session): The SQLModel database session.
+            model (type[T]): The SQLModel model class to query.
+            dialect: Database dialect for date grouping ('postgresql' or 'sqlite').
+
+        Returns:
+            dict: Grouped response with structure:
+                {
+                    "groups": [
+                        {
+                            "key": "group_value",
+                            "items": [...],
+                            "pagination": {...}
+                        },
+                        ...
+                    ],
+                    "truncated": false
+                }
+
+        Example:
+            ```python
+            querymate = Querymate(
+                select=["id", "name", "status"],
+                group_by="status",
+                limit=10
+            )
+            results = querymate.run_grouped(db, Task)
+            ```
+        """
+        group_config = self._get_group_config()
+        extractor = GroupKeyExtractor(dialect=dialect)
+
+        query_builder = QueryBuilder(model=model)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+        )
+
+        # Get all distinct group keys with their counts
+        group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
+
+        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        max_total = settings.MAX_LIMIT
+        total_fetched = 0
+        truncated = False
+        groups: list[GroupResult] = []
+
+        for group_key, group_total in group_keys:
+            if total_fetched >= max_total:
+                truncated = True
+                break
+
+            # Calculate how many items we can fetch for this group
+            remaining = max_total - total_fetched
+            effective_limit = min(per_group_limit, remaining)
+
+            if effective_limit <= 0:
+                truncated = True
+                break
+
+            # Fetch items for this group
+            items = query_builder.fetch_for_group(
+                db,
+                model,
+                group_config,
+                extractor,
+                group_key,
+                limit=effective_limit,
+                offset=self.offset or 0,
+            )
+
+            serialized = query_builder.serialize(items)
+            total_fetched += len(serialized)
+
+            # Build pagination for this group
+            pagination = self._pagination_for_group(
+                total=group_total,
+                limit=per_group_limit,
+                offset=self.offset or 0,
+            )
+
+            groups.append(
+                GroupResult(
+                    key=str(group_key) if group_key is not None else None,
+                    items=serialized,
+                    pagination=pagination,
+                )
+            )
+
+            # Check if we hit the limit mid-group
+            if len(serialized) < effective_limit and effective_limit < per_group_limit:
+                truncated = True
+
+        response = GroupedResponse(groups=groups, truncated=truncated)
+        return response.model_dump()
+
+    async def run_grouped_async(
+        self,
+        db: AsyncSession,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Build and execute a grouped query asynchronously.
+
+        Groups results by the specified field. Each group contains items paginated
+        by the limit parameter. The total items across all groups is capped by MAX_LIMIT.
+
+        Args:
+            db (AsyncSession): The SQLModel async database session.
+            model (type[T]): The SQLModel model class to query.
+            dialect: Database dialect for date grouping ('postgresql' or 'sqlite').
+
+        Returns:
+            dict: Grouped response with structure:
+                {
+                    "groups": [
+                        {
+                            "key": "group_value",
+                            "items": [...],
+                            "pagination": {...}
+                        },
+                        ...
+                    ],
+                    "truncated": false
+                }
+
+        Example:
+            ```python
+            querymate = Querymate(
+                select=["id", "name", "status"],
+                group_by="status",
+                limit=10
+            )
+            results = await querymate.run_grouped_async(db, Task)
+            ```
+        """
+        group_config = self._get_group_config()
+        extractor = GroupKeyExtractor(dialect=dialect)
+
+        query_builder = QueryBuilder(model=model)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+        )
+
+        group_keys = await query_builder.get_distinct_group_keys_async(
+            db, group_config, extractor
+        )
+
+        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        max_total = settings.MAX_LIMIT
+        total_fetched = 0
+        truncated = False
+        groups: list[GroupResult] = []
+
+        for group_key, group_total in group_keys:
+            if total_fetched >= max_total:
+                truncated = True
+                break
+
+            remaining = max_total - total_fetched
+            effective_limit = min(per_group_limit, remaining)
+
+            if effective_limit <= 0:
+                truncated = True
+                break
+
+            items = await query_builder.fetch_for_group_async(
+                db,
+                model,
+                group_config,
+                extractor,
+                group_key,
+                limit=effective_limit,
+                offset=self.offset or 0,
+            )
+
+            serialized = query_builder.serialize(items)
+            total_fetched += len(serialized)
+
+            pagination = self._pagination_for_group(
+                total=group_total,
+                limit=per_group_limit,
+                offset=self.offset or 0,
+            )
+
+            groups.append(
+                GroupResult(
+                    key=str(group_key) if group_key is not None else None,
+                    items=serialized,
+                    pagination=pagination,
+                )
+            )
+
+            if len(serialized) < effective_limit and effective_limit < per_group_limit:
+                truncated = True
+
+        response = GroupedResponse(groups=groups, truncated=truncated)
+        return response.model_dump()
+
+    def _pagination_for_group(
+        self, total: int, limit: int, offset: int
+    ) -> dict[str, Any]:
+        """Build pagination metadata for a single group.
+
+        Args:
+            total: Total items in the group.
+            limit: Per-group limit.
+            offset: Offset within the group.
+
+        Returns:
+            Pagination metadata dict.
+        """
+        size = limit
+        pages = (total + size - 1) // size if size > 0 else 1
+        pages = max(1, pages)
+        computed_page = (offset // size) + 1 if size > 0 else 1
+        page = max(1, min(computed_page, pages))
+        previous_page = page - 1 if page > 1 else None
+        next_page = page + 1 if page < pages else None
+
+        return {
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": pages,
+            "previous_page": previous_page,
+            "next_page": next_page,
+        }

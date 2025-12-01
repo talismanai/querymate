@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from logging import getLogger
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from sqlalchemy import Join, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,9 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from querymate.core.config import settings
 from querymate.core.filter import FilterBuilder
+
+if TYPE_CHECKING:
+    from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
 
 T = TypeVar("T", bound=SQLModel)
 
@@ -747,3 +750,278 @@ class QueryBuilder:
         except Exception:
             value_async = results.scalar()
         return int(value_async or 0)
+
+    # -------------------------------------------------------------------------
+    # Grouping Methods
+    # -------------------------------------------------------------------------
+
+    def _resolve_column(self, field_path: str) -> InstrumentedAttribute:
+        """Resolve a field path to a SQLAlchemy column.
+
+        Args:
+            field_path: Dot-separated path to the field.
+
+        Returns:
+            The resolved column attribute.
+        """
+        parts = field_path.split(".")
+        current: Any = self.model
+        for part in parts:
+            if hasattr(current, part):
+                attr = getattr(current, part)
+                if hasattr(attr, "property") and hasattr(attr.property, "mapper"):
+                    current = attr.property.mapper.class_
+                else:
+                    current = attr
+            else:
+                raise AttributeError(f"Field {part} not found in {current}")
+        return current
+
+    def get_distinct_group_keys(
+        self,
+        db: Session,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+    ) -> list[tuple[Any, int]]:
+        """Get distinct group keys with counts.
+
+        Args:
+            db: Database session.
+            group_config: Grouping configuration.
+            extractor: Group key extractor for SQL expression generation.
+
+        Returns:
+            List of (group_key, count) tuples ordered naturally.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        # Build query for distinct keys with counts
+        keys_query = select(
+            group_expr.label("group_key"),
+            func.count(func.distinct(pk_col)).label("count"),
+        ).group_by(group_expr)
+
+        # Apply existing filters
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                keys_query = keys_query.where(*filters)
+
+        # Order naturally (alphabetically for strings, chronologically for dates)
+        keys_query = keys_query.order_by(group_expr)
+
+        results = db.exec(keys_query).all()
+        return [(row[0], row[1]) for row in results]
+
+    async def get_distinct_group_keys_async(
+        self,
+        db: AsyncSession,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+    ) -> list[tuple[Any, int]]:
+        """Get distinct group keys with counts asynchronously.
+
+        Args:
+            db: Async database session.
+            group_config: Grouping configuration.
+            extractor: Group key extractor for SQL expression generation.
+
+        Returns:
+            List of (group_key, count) tuples ordered naturally.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        keys_query = select(
+            group_expr.label("group_key"),
+            func.count(func.distinct(pk_col)).label("count"),
+        ).group_by(group_expr)
+
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                keys_query = keys_query.where(*filters)
+
+        keys_query = keys_query.order_by(group_expr)
+
+        results = await db.execute(keys_query)
+        return [(row[0], row[1]) for row in results.all()]
+
+    def fetch_for_group(
+        self,
+        db: Session,
+        model: type[T],
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        group_key: Any,
+        limit: int,
+        offset: int = 0,
+    ) -> list[T]:
+        """Fetch items for a specific group.
+
+        Args:
+            db: Database session.
+            model: The model class.
+            group_config: Grouping configuration.
+            extractor: Group key extractor.
+            group_key: The group key value to filter by.
+            limit: Maximum items to return.
+            offset: Number of items to skip.
+
+        Returns:
+            List of model instances for the group.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        # Build a fresh query for this group
+        group_builder = QueryBuilder(model)
+        group_builder.apply_select(self.select if self.select else None)
+
+        # Combine existing filters with group filter
+        combined_filter = dict(self.filter) if self.filter else {}
+
+        group_builder.apply_filter(combined_filter)
+
+        # Add group key condition to the query
+        group_builder.query = group_builder.query.where(group_expr == group_key)
+
+        # Apply sorting
+        if self.sort:
+            group_builder.apply_sort(self.sort)
+
+        # Apply pagination
+        group_builder.apply_limit(limit)
+        group_builder.apply_offset(offset)
+
+        return group_builder.fetch(db, model)
+
+    async def fetch_for_group_async(
+        self,
+        db: AsyncSession,
+        model: type[T],
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        group_key: Any,
+        limit: int,
+        offset: int = 0,
+    ) -> list[T]:
+        """Fetch items for a specific group asynchronously.
+
+        Args:
+            db: Async database session.
+            model: The model class.
+            group_config: Grouping configuration.
+            extractor: Group key extractor.
+            group_key: The group key value to filter by.
+            limit: Maximum items to return.
+            offset: Number of items to skip.
+
+        Returns:
+            List of model instances for the group.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        group_builder = QueryBuilder(model)
+        group_builder.apply_select(self.select if self.select else None)
+
+        combined_filter = dict(self.filter) if self.filter else {}
+        group_builder.apply_filter(combined_filter)
+
+        group_builder.query = group_builder.query.where(group_expr == group_key)
+
+        if self.sort:
+            group_builder.apply_sort(self.sort)
+
+        group_builder.apply_limit(limit)
+        group_builder.apply_offset(offset)
+
+        return await group_builder.fetch_async(db, model)
+
+    def count_for_group(
+        self,
+        db: Session,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        group_key: Any,
+    ) -> int:
+        """Count items in a specific group.
+
+        Args:
+            db: Database session.
+            group_config: Grouping configuration.
+            extractor: Group key extractor.
+            group_key: The group key value.
+
+        Returns:
+            Total count of items in the group.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        count_query = select(func.count(func.distinct(pk_col)))
+
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                count_query = count_query.where(*filters)
+
+        count_query = count_query.where(group_expr == group_key)
+
+        result = db.exec(count_query)
+        try:
+            return int(result.one())
+        except Exception:
+            value = result.first()
+            return int(value or 0)
+
+    async def count_for_group_async(
+        self,
+        db: AsyncSession,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        group_key: Any,
+    ) -> int:
+        """Count items in a specific group asynchronously.
+
+        Args:
+            db: Async database session.
+            group_config: Grouping configuration.
+            extractor: Group key extractor.
+            group_key: The group key value.
+
+        Returns:
+            Total count of items in the group.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        count_query = select(func.count(func.distinct(pk_col)))
+
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                count_query = count_query.where(*filters)
+
+        count_query = count_query.where(group_expr == group_key)
+
+        result = await db.execute(count_query)
+        try:
+            return int(result.scalar_one())
+        except Exception:
+            value = result.scalar()
+            return int(value or 0)

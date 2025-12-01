@@ -130,6 +130,15 @@ class QueryMateSettings(BaseSettings):
         default=True, description="Always include required fields"
     )
 
+    # Grouping configuration
+    GROUP_BY_PARAM_NAME: str = Field(
+        default="group_by", description="Group by parameter name"
+    )
+    SUPPORTED_DATE_GRANULARITIES: list[str] = Field(
+        default=["year", "month", "day", "hour", "minute"],
+        description="Supported date granularities for grouping",
+    )
+
     model_config = SettingsConfigDict(env_prefix="QUERYMATE_", case_sensitive=False)
 
 
