@@ -4,9 +4,8 @@ This module provides support for grouping query results by field values,
 including dynamic date grouping with timezone support.
 """
 
-from datetime import timedelta
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
@@ -320,7 +319,7 @@ class DefaultFieldResolver:
                     current = attr
             else:
                 raise AttributeError(f"Field {part} not found in {current}")
-        return current
+        return cast(InstrumentedAttribute[Any], current)
 
 
 class GroupResult(BaseModel):
@@ -345,4 +344,6 @@ class GroupedResponse(BaseModel):
         default=False,
         description="True if MAX_LIMIT was reached before all groups were filled",
     )
+
+
 

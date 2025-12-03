@@ -74,7 +74,7 @@ class QueryBuilder:
     query: SelectOfScalar
     select: list[FieldSelection]
     filter: dict[str, Any]
-    sort: list[str]
+    sort: list[str | dict[str, Any]]
     limit: int | None = settings.DEFAULT_LIMIT
     offset: int | None = settings.DEFAULT_OFFSET
 
@@ -289,7 +289,7 @@ class QueryBuilder:
         """
         if not sort:
             return self
-        self.sort = sort  # type: ignore[assignment]
+        self.sort = sort
         for sort_param in sort:
             # Custom value order: accept {"field": [values...]} or {"field": {"values": [...]} or {"field": {"order": [...]}}
             if isinstance(sort_param, dict):
@@ -775,7 +775,7 @@ class QueryBuilder:
                     current = attr
             else:
                 raise AttributeError(f"Field {part} not found in {current}")
-        return current
+        return cast(InstrumentedAttribute[Any], current)
 
     def get_distinct_group_keys(
         self,

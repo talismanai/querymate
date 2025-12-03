@@ -1,7 +1,7 @@
 # type: ignore
 """Tests for grouped query functionality."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 from sqlmodel import Session
@@ -14,7 +14,6 @@ from querymate.core.grouping import (
 )
 
 from .models import Post, User
-
 
 # -----------------------------------------------------------------------------
 # GroupByConfig Tests
@@ -485,4 +484,6 @@ class TestGroupedQueries:
             assert "pages" in pagination
             assert pagination["page"] == 1
             assert pagination["size"] == 1
+
+
 
