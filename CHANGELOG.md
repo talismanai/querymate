@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.8] - 2025-12-04
+
+### Patch Changes
+
+Adds grouping functionality
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
