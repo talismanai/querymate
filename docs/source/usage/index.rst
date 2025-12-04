@@ -9,6 +9,7 @@ This guide covers the main features and usage patterns of QueryMate.
    filtering
    sorting
    pagination
+   grouping
    field_selection
    relationships
    serialization
@@ -77,7 +78,8 @@ QueryMate accepts query parameters in JSON format through the ``q`` parameter. T
         "sort": ["-field1", "field2"],
         "limit": 10,
         "offset": 0,
-        "select": ["field1", "field2", {"relationship": ["field1", "field2"]}]
+        "select": ["field1", "field2", {"relationship": ["field1", "field2"]}],
+        "group_by": "status"
     }
 
 For example:
@@ -85,6 +87,13 @@ For example:
 .. code-block:: text
 
     /users?q={"filter":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0,"select":["id","name",{"posts":["title"]}]}
+
+For grouped queries:
+
+.. code-block:: text
+
+    /users?q={"group_by":"status","limit":10}
+    /posts?q={"group_by":{"field":"created_at","granularity":"month"},"limit":10}
 
 Serialization
 ------------

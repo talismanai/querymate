@@ -12,6 +12,7 @@
 - ✅ Sorting
 - ✅ Pagination (limit/offset)
 - ✅ Field selection
+- ✅ Grouping (with date granularity and timezone support)
 - ✅ Query parameter parsing
 - ✅ Async database support
 - ✅ Built-in serialization
@@ -32,6 +33,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 🏗️ Query Building             | Build SQL queries programmatically                                         |
 | ⚡ Async Support              | Full support for async database operations                                 |
 | 📦 Serialization              | Built-in serialization with support for relationships                      |
+| 📁 Grouping                   | Group results by field with date granularity and timezone support          |
 
 ---
 
@@ -260,6 +262,154 @@ Query flag name and default behavior are configurable (see settings):
 - `PAGINATION_PARAM_NAME` (default: `include_pagination`)
 - `DEFAULT_RETURN_PAGINATION` (default: `False`)
 
+### Grouping
+
+Group query results by any field, including dates with configurable granularity and timezone support.
+
+#### Basic Grouping by Field
+
+```python
+# Group users by status
+querymate = Querymate(
+    select=["id", "name", "status"],
+    group_by="status",
+    limit=10,  # Per-group limit
+)
+result = querymate.run_grouped(db, User)
+# Or async:
+# result = await querymate.run_grouped_async(db, User)
+```
+
+Query parameter example:
+```text
+/users?q={"select":["id","name","status"],"group_by":"status","limit":10}
+```
+
+#### Date Grouping with Granularity
+
+Group by date fields with configurable granularity: `year`, `month`, `day`, `hour`, or `minute`.
+
+```python
+# Group by month
+querymate = Querymate(
+    select=["id", "title", "created_at"],
+    group_by={"field": "created_at", "granularity": "month"},
+    limit=10,
+)
+result = querymate.run_grouped(db, Post)
+```
+
+Query parameter examples:
+```text
+# Group by year
+/posts?q={"group_by":{"field":"created_at","granularity":"year"}}
+
+# Group by day
+/posts?q={"group_by":{"field":"created_at","granularity":"day"}}
+
+# Group by hour
+/posts?q={"group_by":{"field":"created_at","granularity":"hour"}}
+```
+
+#### Timezone Support
+
+Apply timezone offset to date grouping using numeric offset or IANA timezone names.
+
+```python
+# Using numeric offset (UTC-3)
+querymate = Querymate(
+    select=["id", "title", "created_at"],
+    group_by={
+        "field": "created_at",
+        "granularity": "day",
+        "tz_offset": -3
+    },
+    limit=10,
+)
+
+# Using IANA timezone name
+querymate = Querymate(
+    select=["id", "title", "created_at"],
+    group_by={
+        "field": "created_at",
+        "granularity": "day",
+        "timezone": "America/Sao_Paulo"
+    },
+    limit=10,
+)
+```
+
+Query parameter examples:
+```text
+# With numeric offset
+/posts?q={"group_by":{"field":"created_at","granularity":"day","tz_offset":-3}}
+
+# With IANA timezone
+/posts?q={"group_by":{"field":"created_at","granularity":"day","timezone":"America/Sao_Paulo"}}
+```
+
+Supported IANA timezones include: `UTC`, `America/New_York`, `America/Los_Angeles`, `America/Sao_Paulo`, `Europe/London`, `Europe/Paris`, `Asia/Tokyo`, `Asia/Shanghai`, `Australia/Sydney`, and more.
+
+#### Grouped Response Structure
+
+```python
+{
+    "groups": [
+        {
+            "key": "active",  # or "2024-01" for month grouping
+            "items": [
+                {"id": 1, "name": "Alice", "status": "active"},
+                {"id": 2, "name": "Bob", "status": "active"}
+            ],
+            "pagination": {
+                "total": 15,
+                "page": 1,
+                "size": 10,
+                "pages": 2,
+                "previous_page": null,
+                "next_page": 2
+            }
+        },
+        {
+            "key": "inactive",
+            "items": [...],
+            "pagination": {...}
+        }
+    ],
+    "truncated": false  # true if MAX_LIMIT was reached
+}
+```
+
+#### Pagination Behavior
+
+- `limit` applies **per group** (each group returns up to `limit` items)
+- `MAX_LIMIT` (default 200) caps the **total items across all groups combined**
+- Groups are ordered naturally: alphabetically for strings, chronologically for dates
+
+```python
+# 10 items per group, but total won't exceed MAX_LIMIT (200)
+querymate = Querymate(
+    select=["id", "name", "status"],
+    group_by="status",
+    limit=10,
+    sort=["-created_at"],  # Sorting applies within each group
+)
+```
+
+#### Combining with Filters and Sorting
+
+```python
+# Group active users by status, sorted by age within each group
+querymate = Querymate(
+    select=["id", "name", "status", "age"],
+    filter={"is_active": True},
+    group_by="status",
+    sort=["-age"],
+    limit=10,
+)
+result = querymate.run_grouped(db, User)
+```
+
 ### Serialization
 
 QueryMate includes built-in serialization capabilities that transform query results into dictionaries containing only the requested fields. This helps reduce payload size and improve performance.
@@ -338,6 +488,7 @@ querymate/
 │   ├── querymate.py              # Main QueryMate class
 │   ├── filter.py                 # Filter handling
 │   ├── query_builder.py          # Query building
+│   ├── grouping.py               # Grouping functionality
 │   └── __init__.py              # Package initialization
 ├── tests/                        # Test suite
 ├── docs/                         # Documentation

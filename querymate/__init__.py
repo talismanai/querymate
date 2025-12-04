@@ -60,6 +60,11 @@ from .core.filter import StartAnyPredicate as StartAnyPredicate
 from .core.filter import StartPredicate as StartPredicate
 from .core.filter import StartsWithPredicate as StartsWithPredicate
 from .core.filter import TruePredicate as TruePredicate
+from .core.grouping import DateGranularity as DateGranularity
+from .core.grouping import GroupByConfig as GroupByConfig
+from .core.grouping import GroupedResponse as GroupedResponse
+from .core.grouping import GroupKeyExtractor as GroupKeyExtractor
+from .core.grouping import GroupResult as GroupResult
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
 from .types import PaginatedResponse as PaginatedResponse
