@@ -84,7 +84,7 @@ Next Steps
 Pagination Quickstart (Side by Side)
 ------------------------------------
 
-Enable pagination metadata via the query flag or force it via method parameter.
+QueryMate provides dedicated methods for plain lists and paginated responses.
 
 .. list-table::
    :header-rows: 1
@@ -105,13 +105,14 @@ Enable pagination metadata via the query flag or force it via method parameter.
 
      - .. code-block:: python
 
-          # Option A: force via method call
-          result = querymate.run(db, User, force_pagination=True)
+          # Returns a typed PaginatedResponse
+          result = querymate.run_paginated(db, User)
 
-          # Option B: respect query flag
-          result2 = Querymate(include_pagination=True).run(db, User)
+          # Access items and metadata
+          items = result.items
+          total = result.pagination.total
 
-          # Example
+          # Example Response
           # {
           #   "items": [
           #     {"id": 1, "name": "John"},
@@ -119,10 +120,10 @@ Enable pagination metadata via the query flag or force it via method parameter.
           #   ],
           #   "pagination": {
           #     "total": 57,
-          #     "page": 2,
+          #     "page": 1,
           #     "size": 10,
           #     "pages": 6,
-          #     "previous_page": 1,
-          #     "next_page": 3
+          #     "previous_page": null,
+          #     "next_page": 2
           #   }
           # }

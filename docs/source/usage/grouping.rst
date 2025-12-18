@@ -216,7 +216,7 @@ Response Fields
 
   * ``key``: The group key value (string representation)
   * ``items``: Serialized items in this group
-  * ``pagination``: Pagination metadata for this group
+  * ``pagination``: Pagination metadata for this group (using the same ``PaginationInfo`` structure as standard paginated queries)
 
 * ``truncated``: ``true`` if ``MAX_LIMIT`` was reached before all groups were filled
 

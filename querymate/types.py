@@ -14,8 +14,8 @@ class PaginationInfo(BaseModel):
     page: int
     size: int
     pages: int
-    previous_page: int | None
-    next_page: int | None
+    previous_page: int | None = None
+    next_page: int | None = None
 
 
 class PaginatedResponse(BaseModel, Generic[T]):

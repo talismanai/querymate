@@ -9,6 +9,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
+
+from querymate.types import PaginationInfo
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlmodel import SQLModel
 
@@ -329,8 +331,8 @@ class GroupResult(BaseModel):
     items: list[dict[str, Any]] = Field(
         default_factory=list, description="Items in this group"
     )
-    pagination: dict[str, Any] = Field(
-        default_factory=dict, description="Pagination metadata for this group"
+    pagination: PaginationInfo = Field(
+        ..., description="Pagination metadata for this group"
     )
 
 

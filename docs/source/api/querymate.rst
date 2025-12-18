@@ -102,7 +102,7 @@ Convert the QueryMate instance to a query parameter string.
 run
 ~~~
 
-Build and execute the query, returning serialized results.
+Build and execute the query, returning a plain list of serialized results.
 
 .. code-block:: python
 
@@ -117,29 +117,30 @@ Build and execute the query, returning serialized results.
     results = querymate.run(db, User)
     # Returns: [{"id": 1, "name": "John", "posts": [{"id": 1, "title": "Post 1"}]}, ...]
 
-Return pagination metadata
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+run_paginated
+~~~~~~~~~~~~~
 
-`run` can optionally return structured pagination metadata along with items. You can enable it via the query payload or force it via method parameter.
+Build and execute the query, returning items along with pagination metadata in a typed ``PaginatedResponse`` object.
 
 .. code-block:: python
 
-    # Option 1: force via method call
-    results = querymate.run(db, User, force_pagination=True)
-    # Option 2: respect the query flag
-    querymate = Querymate(include_pagination=True)
-    results = querymate.run(db, User)  # will include pagination
+    # Sync paginated response
+    result = querymate.run_paginated(db, User)
+
+    # Accessing results
+    print(result.items)            # list[dict[str, Any]]
+    print(result.pagination.total) # int
 
     # Response shape:
     # {
     #   "items": [{"id": 1, "name": "John"}, ...],
     #   "pagination": {
-    #       "total": 57,          # total matching records (ignores limit/offset)
-    #       "page": 2,            # current page number (1-based)
-    #       "size": 10,           # requested page size (limit)
-    #       "pages": 6,           # total pages (ceil(total/size), minimum 1)
-    #       "previous_page": 1,   # previous page number or None
-    #       "next_page": 3        # next page number or None
+    #       "total": 57,          # total matching records
+    #       "page": 1,            # current page number
+    #       "size": 10,           # requested page size
+    #       "pages": 6,           # total pages
+    #       "previous_page": None,
+    #       "next_page": 2
     #   }
     # }
 
@@ -154,9 +155,9 @@ Build and execute the query, returning raw model instances.
     # Returns: [<User object>, ...]
 
 run_async
-~~~~~~~~
+~~~~~~~~~
 
-Build and execute the query asynchronously, returning serialized results.
+Build and execute the query asynchronously, returning a plain list of serialized results.
 
 .. code-block:: python
 
@@ -164,19 +165,18 @@ Build and execute the query asynchronously, returning serialized results.
         results = await querymate.run_async(db, User)
         # Returns: [{"id": 1, "name": "John"}, ...]
 
-Return pagination metadata (async)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+run_async_paginated
+~~~~~~~~~~~~~~~~~~~
 
-The async variant also supports returning pagination data.
+Build and execute the query asynchronously, returning items along with pagination metadata in a typed ``PaginatedResponse`` object.
 
 .. code-block:: python
 
     async def get_users():
-        # Force
-        result = await querymate.run_async(db, User, force_pagination=True)
-        # Or respect query flag
-        result2 = await Querymate(include_pagination=True).run_async(db, User)
-        # Same shape as the sync variant:
+        # Async paginated response
+        result = await querymate.run_async_paginated(db, User)
+        
+        # Same shape as sync variant:
         # {
         #   "items": [...],
         #   "pagination": {"total": ..., "page": ..., "size": ..., "pages": ..., "previous_page": ..., "next_page": ...}
