@@ -1,5 +1,5 @@
 import json
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Request

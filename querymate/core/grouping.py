@@ -9,12 +9,11 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
-
-from querymate.types import PaginationInfo
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlmodel import SQLModel
 
 from querymate.core.config import settings
+from querymate.types import PaginationInfo
 
 
 class DateGranularity(str, Enum):
@@ -181,9 +180,7 @@ class GroupByConfig(BaseModel):
 class GroupKeyExtractor:
     """Generates SQL expressions for extracting group keys from columns."""
 
-    def __init__(
-        self, dialect: Literal["postgresql", "sqlite"] = "postgresql"
-    ) -> None:
+    def __init__(self, dialect: Literal["postgresql", "sqlite"] = "postgresql") -> None:
         """Initialize the extractor with the database dialect.
 
         Args:
@@ -346,6 +343,3 @@ class GroupedResponse(BaseModel):
         default=False,
         description="True if MAX_LIMIT was reached before all groups were filled",
     )
-
-
-

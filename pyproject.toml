@@ -69,6 +69,7 @@ asyncio_mode = "auto"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = [ "F811", "B008", "E721",]
+"examples/*" = [ "B008",]
 
 [tool.ruff.lint.isort]
 known-first-party = [ "querymate",]
