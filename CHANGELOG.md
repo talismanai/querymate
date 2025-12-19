@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.8] - 2025-12-19
+
+### Minor Changes
+
+Splits paginated and list
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes

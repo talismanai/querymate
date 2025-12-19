@@ -2,7 +2,7 @@
 QueryMate - A Python library for building and executing database queries.
 """
 
-__version__ = "0.5.2"  # Update this with your actual version
+__version__ = "0.6.8"  # Update this with your actual version
 
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
