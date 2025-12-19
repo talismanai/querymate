@@ -65,24 +65,28 @@ Response Shape With Metadata
 ----------------------------
 
 When building UIs, you often need the total number of records and page navigation data.
-QueryMate can return a structured response with items and pagination metadata. You can enable it via:
+QueryMate provides dedicated methods to return a typed ``PaginatedResponse`` object containing items and pagination metadata.
 
-* Query parameter (respected by default): ``{"include_pagination": true}``
-* Instance flag: ``Querymate(include_pagination=True)``
-* Method override: ``force_pagination=True/False`` on ``run``/``run_async``
+Use the following methods for paginated responses:
+
+* Sync: ``run_paginated(db, model)``
+* Async: ``run_async_paginated(db, model)``
 
 .. code-block:: python
 
-    # Sync: force pagination regardless of instance flag
-    result = querymate.run(db, User, force_pagination=True)
+    # Sync paginated response
+    result = querymate.run_paginated(db, User)
 
-    # Async: force pagination
-    result = await querymate.run_async(db, User, force_pagination=True)
+    # Async paginated response
+    result = await querymate.run_async_paginated(db, User)
 
-    # Respect query flag (no force):
-    result2 = Querymate(include_pagination=True).run(db, User)
+    # Accessing results
+    print(len(result.items))
+    print(result.pagination.total)
 
-The returned object has the following shape:
+The standard ``run`` and ``run_async`` methods always return a plain list of items.
+
+The returned ``PaginatedResponse`` object has the following shape:
 
 .. code-block:: json
 
@@ -109,9 +113,25 @@ Field semantics:
 * ``previous_page``: Previous page number or ``null`` on first page
 * ``next_page``: Next page number or ``null`` on last page
 
-Precedence
-----------
+Methods Summary
+---------------
 
-* ``force_pagination=True``: always include pagination
-* ``force_pagination=False``: never include pagination
-* ``force_pagination=None`` (default): respect ``include_pagination`` (default is configurable)
+.. list-table::
+   :header-rows: 1
+   :widths: 30 40 30
+
+   * - Method
+     - Return Type
+     - Description
+   * - ``run``
+     - ``list[dict[str, Any]]``
+     - Plain list of serialized items.
+   * - ``run_paginated``
+     - ``PaginatedResponse``
+     - Items with pagination metadata.
+   * - ``run_async``
+     - ``list[dict[str, Any]]``
+     - Async plain list of items.
+   * - ``run_async_paginated``
+     - ``PaginatedResponse``
+     - Async items with pagination.

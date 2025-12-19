@@ -13,6 +13,7 @@ from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlmodel import SQLModel
 
 from querymate.core.config import settings
+from querymate.types import PaginationInfo
 
 
 class DateGranularity(str, Enum):
@@ -179,9 +180,7 @@ class GroupByConfig(BaseModel):
 class GroupKeyExtractor:
     """Generates SQL expressions for extracting group keys from columns."""
 
-    def __init__(
-        self, dialect: Literal["postgresql", "sqlite"] = "postgresql"
-    ) -> None:
+    def __init__(self, dialect: Literal["postgresql", "sqlite"] = "postgresql") -> None:
         """Initialize the extractor with the database dialect.
 
         Args:
@@ -329,8 +328,8 @@ class GroupResult(BaseModel):
     items: list[dict[str, Any]] = Field(
         default_factory=list, description="Items in this group"
     )
-    pagination: dict[str, Any] = Field(
-        default_factory=dict, description="Pagination metadata for this group"
+    pagination: PaginationInfo = Field(
+        ..., description="Pagination metadata for this group"
     )
 
 
@@ -344,6 +343,3 @@ class GroupedResponse(BaseModel):
         default=False,
         description="True if MAX_LIMIT was reached before all groups were filled",
     )
-
-
-

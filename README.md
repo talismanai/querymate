@@ -94,7 +94,9 @@ def get_users(
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
     db: Session = Depends(get_db)
 ):
-    # Returns serialized results (dictionaries)
+    # Returns serialized results as a list
+    if query.include_pagination:
+        return query.run_paginated(db, User)
     return query.run(db, User)
 
 @app.get("/users/raw")
@@ -142,7 +144,9 @@ async def get_users(
     query: QueryMate = Depends(QueryMate.fastapi_dependency),
     db: AsyncSession = Depends(get_db)
 ):
-    # Returns serialized results (dictionaries)
+    # Returns serialized results
+    if query.include_pagination:
+        return await query.run_async_paginated(db, User)
     return await query.run_async(db, User)
 
 @app.get("/users/raw")
@@ -232,18 +236,16 @@ Querymate(sort=[{"posts.visibility": ["private", "internal", "public"]}]).run_ra
 ### Pagination Metadata Response
 
 In addition to plain lists, you can include pagination metadata alongside items.
-Enable it via the query flag or force it via the method parameter:
+Use the dedicated paginated methods:
 
 ```python
-# Force via method
-result = query.run(db, User, force_pagination=True)
-# Or async:
-# result = await query.run_async(db, User, force_pagination=True)
+# Sync paginated response
+result = query.run_paginated(db, User)
 
-# Respect the query flag / instance setting
-result2 = Querymate(include_pagination=True).run(db, User)
+# Async paginated response
+result = await query.run_async_paginated(db, User)
 
-# Response shape
+# Response shape (PaginatedResponse object)
 # {
 #   "items": [{"id": 1, "name": "John"}, ...],
 #   "pagination": {
@@ -257,10 +259,12 @@ result2 = Querymate(include_pagination=True).run(db, User)
 # }
 ```
 
-Query flag name and default behavior are configurable (see settings):
+The standard `run` and `run_async` methods always return a plain list of items:
 
-- `PAGINATION_PARAM_NAME` (default: `include_pagination`)
-- `DEFAULT_RETURN_PAGINATION` (default: `False`)
+```python
+# Always returns a list[dict[str, Any]]
+result = query.run(db, User)
+```
 
 ### Grouping
 
