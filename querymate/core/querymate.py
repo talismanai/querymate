@@ -15,7 +15,7 @@ from querymate.core.grouping import (
     GroupKeyExtractor,
     GroupResult,
 )
-from querymate.core.query_builder import QueryBuilder
+from querymate.core.query_builder import JoinType, QueryBuilder
 from querymate.types import PaginatedResponse, PaginationInfo
 
 T = TypeVar("T", bound=SQLModel)
@@ -42,6 +42,8 @@ class Querymate(BaseModel):
         sort (list[str] | None): List of fields to sort by. Prefix with "-" for descending order. Default is [].
         limit (int | None): Maximum number of records to return. Default is 10, max is 200.
         offset (int | None): Number of records to skip. Default is 0.
+        join_type (JoinType | None): Type of join for relationship queries. Options: 'inner' (default),
+            'left', 'outer'. Use 'left' or 'outer' to include parent records even when no children exist.
 
     Serialization:
         The Querymate class includes built-in serialization capabilities through the `run` and `run_async` methods.
@@ -112,6 +114,11 @@ class Querymate(BaseModel):
         default=None,
         description="Group results by field. Can be a string or dict with field, granularity, tz_offset/timezone",
         alias=settings.GROUP_BY_PARAM_NAME,
+    )
+    join_type: JoinType | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description="Join type for relationship queries. Options: 'inner' (default), 'left', 'outer'",
+        alias=settings.JOIN_TYPE_PARAM_NAME,
     )
 
     @classmethod
@@ -227,6 +234,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         return query_builder.fetch(db, model)
 
@@ -253,6 +261,13 @@ class Querymate(BaseModel):
             querymate = Querymate(select=["id", "name"])
             # Returns serialized results
             results = querymate.run(db, User)
+
+            # With left join to include records without relationships
+            querymate = Querymate(
+                select=["id", "name", {"posts": ["title"]}],
+                join_type="left"
+            )
+            results = querymate.run(db, User)
             ```
         """
         query_builder = QueryBuilder(model=model)
@@ -262,6 +277,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         data = query_builder.fetch(db, model)
         return query_builder.serialize(data)
@@ -287,6 +303,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         data = query_builder.fetch(db, model)
         serialized = query_builder.serialize(data)
@@ -320,6 +337,13 @@ class Querymate(BaseModel):
             querymate = Querymate(select=["id", "name"])
             # Returns serialized results
             results = await querymate.run_async(db, User)
+
+            # With left join
+            querymate = Querymate(
+                select=["id", "name", {"posts": ["title"]}],
+                join_type="left"
+            )
+            results = await querymate.run_async(db, User)
             ```
         """
         query_builder = QueryBuilder(model=model)
@@ -329,6 +353,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         data = await query_builder.fetch_async(db, model)
         return query_builder.serialize(data)
@@ -354,6 +379,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         data = await query_builder.fetch_async(db, model)
         serialized = query_builder.serialize(data)
@@ -384,6 +410,7 @@ class Querymate(BaseModel):
             sort=self.sort,
             limit=self.limit,
             offset=self.offset,
+            join_type=self.join_type,
         )
         return await query_builder.fetch_async(db, model)
 
@@ -453,6 +480,7 @@ class Querymate(BaseModel):
             select=self.select,
             filter=self.filter,
             sort=self.sort,
+            join_type=self.join_type,
         )
 
         # Get all distinct group keys with their counts
@@ -486,6 +514,7 @@ class Querymate(BaseModel):
                 group_key,
                 limit=effective_limit,
                 offset=self.offset or 0,
+                join_type=self.join_type,
             )
 
             serialized = query_builder.serialize(items)
@@ -562,6 +591,7 @@ class Querymate(BaseModel):
             select=self.select,
             filter=self.filter,
             sort=self.sort,
+            join_type=self.join_type,
         )
 
         group_keys = await query_builder.get_distinct_group_keys_async(
@@ -594,6 +624,7 @@ class Querymate(BaseModel):
                 group_key,
                 limit=effective_limit,
                 offset=self.offset or 0,
+                join_type=self.join_type,
             )
 
             serialized = query_builder.serialize(items)

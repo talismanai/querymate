@@ -84,7 +84,7 @@ def test_to_qs() -> None:
 
     assert (
         qs
-        == "q=%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%7D"
+        == "q=%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%2C%22join_type%22%3Anull%7D"
     )
 
 
@@ -99,7 +99,7 @@ def test_to_query_param() -> None:
     qp = querymate.to_query_param()
     assert (
         qp
-        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%7D"
+        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%2C%22join_type%22%3Anull%7D"
     )
 
 
@@ -743,3 +743,253 @@ async def test_run_with_pagination_async(async_db: AsyncSession) -> None:
     assert p.page == 2
     assert p.previous_page == 1
     assert p.next_page == 3
+
+
+# ================================
+# Test cases for join_type parameter
+# ================================
+def test_join_type_inner_excludes_users_without_posts(db: Session) -> None:
+    """Inner join (default) should exclude users without any posts."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # Default (inner join) - should only return user with posts
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="inner",
+    )
+    results = querymate.run(db=db, model=User)
+
+    assert len(results) == 1
+    assert results[0]["name"] == "John"
+    assert len(results[0]["posts"]) == 1
+
+
+def test_join_type_left_includes_users_without_posts(db: Session) -> None:
+    """Left join should include users without posts (with empty posts list)."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # Left join - should return both users
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    results = querymate.run(db=db, model=User)
+
+    assert len(results) == 2
+    user_names = {r["name"] for r in results}
+    assert user_names == {"John", "Jane"}
+
+    # User with posts should have posts
+    john_result = next(r for r in results if r["name"] == "John")
+    assert len(john_result["posts"]) == 1
+
+    # User without posts should have empty posts list
+    jane_result = next(r for r in results if r["name"] == "Jane")
+    assert jane_result["posts"] == []
+
+
+def test_join_type_outer_same_as_left(db: Session) -> None:
+    """Outer join should behave the same as left join."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # Outer join should work same as left
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="outer",
+    )
+    results = querymate.run(db=db, model=User)
+
+    assert len(results) == 2
+    user_names = {r["name"] for r in results}
+    assert user_names == {"John", "Jane"}
+
+
+def test_join_type_default_is_inner(db: Session) -> None:
+    """Default join_type should be inner (excluding users without posts)."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # No join_type specified - default should be inner
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+    )
+    results = querymate.run(db=db, model=User)
+
+    assert len(results) == 1
+    assert results[0]["name"] == "John"
+
+
+def test_join_type_left_with_filter(db: Session) -> None:
+    """Left join should work correctly with filters."""
+    user1 = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
+    user2 = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25)
+    user3 = User(id=3, name="Bob", is_active=True, email="bob@example.com", age=35)
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add_all([user1, user2, user3, post])
+    db.commit()
+
+    # Left join with age filter
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        filter={"age": {"lt": 35}},
+        join_type="left",
+    )
+    results = querymate.run(db=db, model=User)
+
+    # Should return John (with post) and Jane (without post), but not Bob
+    assert len(results) == 2
+    user_names = {r["name"] for r in results}
+    assert user_names == {"John", "Jane"}
+
+
+def test_join_type_in_querystring(db: Session) -> None:
+    """Join type should be parseable from query string."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # Parse from query string
+    query_params = QueryParams(
+        {"q": '{"select": ["id", "name", {"posts": ["id", "title"]}], "join_type": "left"}'}
+    )
+    querymate = Querymate.from_qs(query_params)
+
+    assert querymate.join_type == "left"
+    results = querymate.run(db=db, model=User)
+
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_join_type_left_async(async_db: AsyncSession) -> None:
+    """Left join should work correctly in async mode."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    async_db.add(user_with_posts)
+    async_db.add(user_without_posts)
+    async_db.add(post)
+    await async_db.commit()
+
+    # Left join async
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    results = await querymate.run_async(async_db, User)
+
+    assert len(results) == 2
+    user_names = {r["name"] for r in results}
+    assert user_names == {"John", "Jane"}
+
+
+@pytest.mark.asyncio
+async def test_join_type_inner_async(async_db: AsyncSession) -> None:
+    """Inner join should work correctly in async mode."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    async_db.add(user_with_posts)
+    async_db.add(user_without_posts)
+    async_db.add(post)
+    await async_db.commit()
+
+    # Inner join async
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="inner",
+    )
+    results = await querymate.run_async(async_db, User)
+
+    assert len(results) == 1
+    assert results[0]["name"] == "John"
+
+
+def test_join_type_raw_methods(db: Session) -> None:
+    """Join type should work with run_raw method."""
+    user_with_posts = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30
+    )
+    user_without_posts = User(
+        id=2, name="Jane", is_active=True, email="jane@example.com", age=25
+    )
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+
+    db.add(user_with_posts)
+    db.add(user_without_posts)
+    db.add(post)
+    db.commit()
+
+    # run_raw with left join
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    results = querymate.run_raw(db=db, model=User)
+
+    assert len(results) == 2
+    user_names = {u.name for u in results}
+    assert user_names == {"John", "Jane"}
