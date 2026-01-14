@@ -225,11 +225,18 @@ class QueryBuilder:
 
         Returns:
             Normalized join type. 'outer' is treated as 'left'.
+
+        Raises:
+            ValueError: If join_type is not a valid option.
         """
         if join_type is None:
             return cast(JoinType, settings.DEFAULT_JOIN_TYPE)
         if join_type == "outer":
             return "left"
+        if join_type not in ("inner", "left"):
+            raise ValueError(
+                f"Invalid join_type: '{join_type}'. Must be 'inner', 'left', or 'outer'."
+            )
         return join_type
 
     def apply_select(

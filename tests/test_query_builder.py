@@ -1056,3 +1056,13 @@ async def test_join_type_left_async(async_db: AsyncSession) -> None:
     assert len(results) == 2
     user_names = {u.name for u in results}
     assert user_names == {"John", "Jane"}
+
+
+def test_apply_select_join_type_invalid_raises_error() -> None:
+    """Test that invalid join_type raises ValueError."""
+    query_builder = QueryBuilder(model=User)
+    with pytest.raises(ValueError, match="Invalid join_type"):
+        query_builder.apply_select(
+            ["id", "name", {"posts": ["id", "title"]}],
+            join_type="banana",  # type: ignore
+        )
