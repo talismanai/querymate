@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from sqlalchemy import Join, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,7 @@ T = TypeVar("T", bound=SQLModel)
 # Type aliases for better readability
 FieldSelection = str | dict[str, list[str]]
 SelectResult = tuple[list[InstrumentedAttribute], list[Join]]
+JoinType = Literal["inner", "left", "outer"]
 
 # Configure logger
 logger = getLogger(__name__)
@@ -216,8 +217,32 @@ class QueryBuilder:
 
         return select_columns, joins
 
+    def _normalize_join_type(self, join_type: JoinType | None) -> JoinType:
+        """Normalize join_type to a valid value.
+
+        Args:
+            join_type: The join type to normalize. Can be 'inner', 'left', or 'outer'.
+
+        Returns:
+            Normalized join type. 'outer' is treated as 'left'.
+
+        Raises:
+            ValueError: If join_type is not a valid option.
+        """
+        if join_type is None:
+            return cast(JoinType, settings.DEFAULT_JOIN_TYPE)
+        if join_type == "outer":
+            return "left"
+        if join_type not in ("inner", "left"):
+            raise ValueError(
+                f"Invalid join_type: '{join_type}'. Must be 'inner', 'left', or 'outer'."
+            )
+        return join_type
+
     def apply_select(
-        self, fields: list[str | dict[str, list[str]]] | None = None
+        self,
+        fields: list[str | dict[str, list[str]]] | None = None,
+        join_type: JoinType | None = None,
     ) -> "QueryBuilder":
         """
         Select fields to be returned in the query.
@@ -229,13 +254,24 @@ class QueryBuilder:
             fields (list[str | dict[str, list[str]]] | None): List of fields to select.
                 Can include nested dictionaries for relationship fields.
                 If None, all fields are selected.
+            join_type (JoinType | None): Type of join to use for relationships.
+                - 'inner' (default): Uses INNER JOIN - excludes parent records without children
+                - 'left' or 'outer': Uses LEFT OUTER JOIN - includes parent records with empty
+                  lists for relationships when no children exist
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
 
         Example:
             ```python
-            builder.select(["name", "email", {"posts": ["title", "content"]}])
+            # Inner join (default) - excludes users without posts
+            builder.apply_select(["name", "email", {"posts": ["title", "content"]}])
+
+            # Left join - includes users without posts (posts will be empty list)
+            builder.apply_select(
+                ["name", "email", {"posts": ["title", "content"]}],
+                join_type="left"
+            )
             ```
         """
         if not fields:
@@ -244,8 +280,13 @@ class QueryBuilder:
         self.select = normalized_fields
         select_columns, joins = self._select(self.model, normalized_fields)
         self.query = select(*select_columns)
+
+        effective_join_type = self._normalize_join_type(join_type)
         for join in joins:
-            self.query = self.query.join(join)
+            if effective_join_type == "left":
+                self.query = self.query.outerjoin(join)
+            else:
+                self.query = self.query.join(join)
         return self
 
     def apply_filter(self, filter_dict: dict[str, Any] | None = None) -> "QueryBuilder":
@@ -432,6 +473,7 @@ class QueryBuilder:
         sort: list[str | dict[str, Any]] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        join_type: JoinType | None = None,
     ) -> "QueryBuilder":
         """Build a complete query with all parameters.
 
@@ -439,11 +481,14 @@ class QueryBuilder:
         into a single method call.
 
         Args:
-            fields (list[str | dict[str, list[str]]] | None): Fields to select.
+            select (list[str | dict[str, list[str]]] | None): Fields to select.
             filter (dict[str, Any] | None): Filter conditions.
             sort (list[str] | None): Sort parameters.
             limit (int | None): Maximum number of records.
             offset (int | None): Number of records to skip.
+            join_type (JoinType | None): Type of join for relationships.
+                - 'inner' (default): Uses INNER JOIN
+                - 'left' or 'outer': Uses LEFT OUTER JOIN
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
@@ -451,16 +496,17 @@ class QueryBuilder:
         Example:
             ```python
             builder.build(
-                fields=["name", {"posts": ["title"]}],
+                select=["name", {"posts": ["title"]}],
                 filter={"age": {"gt": 18}},
                 sort=["-name"],
                 limit=10,
-                offset=0
+                offset=0,
+                join_type="left"  # Include users without posts
             )
             ```
         """
         return (
-            self.apply_select(select)
+            self.apply_select(select, join_type=join_type)
             .apply_filter(filter)
             .apply_sort(sort)
             .apply_limit(limit)
@@ -559,9 +605,19 @@ class QueryBuilder:
 
         id_field = next(field for field in mapper.primary_key)
 
+        # Collect relationship names that should be initialized as empty lists
+        relationship_names: list[str] = []
+        for field in self.select:
+            if isinstance(field, dict):
+                relationship_names.extend(field.keys())
+
         for row in results:
             field_idx = [0]
             obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
+
+            # Skip None objects (shouldn't happen for root objects)
+            if obj is None:
+                continue
 
             # Get the ID of the object
             obj_id = getattr(obj, id_field.name)
@@ -579,7 +635,14 @@ class QueryBuilder:
                                 if new_rel not in existing_rels:
                                     existing_rels.append(new_rel)
             else:
-                # First time seeing this object, add it to our dictionary
+                # First time seeing this object
+                # Ensure relationship attributes are initialized as empty lists if not set
+                for rel_name in relationship_names:
+                    rel_property = mapper.relationships.get(rel_name)
+                    if rel_property and rel_property.uselist:
+                        current_val = getattr(obj, rel_name, None)
+                        if current_val is None:
+                            setattr(obj, rel_name, [])
                 reconstructed[obj_id] = obj
 
         return list(reconstructed.values())
@@ -634,7 +697,7 @@ class QueryBuilder:
         fields: list[FieldSelection],
         row: tuple[Any, ...],
         field_idx: list[int],
-    ) -> tuple[T, list[int]]:
+    ) -> tuple[T | None, list[int]]:
         """Reconstruct a model instance from a query result row.
 
         This method handles both direct fields and relationship fields.
@@ -646,7 +709,8 @@ class QueryBuilder:
             field_idx (list[int]): Current field index for tracking position in row.
 
         Returns:
-            tuple[T, list[int]]: The reconstructed model instance and updated field index.
+            tuple[T | None, list[int]]: The reconstructed model instance (or None if all
+                fields are None, indicating no match in a LEFT JOIN) and updated field index.
         """
         mapper: Mapper = inspect(model)
         obj_kwargs: dict[str, Any] = {}
@@ -667,7 +731,14 @@ class QueryBuilder:
                         row,
                         field_idx,
                     )
-                    related_objs.setdefault(relation_name, []).append(related_obj)
+                    # Only add non-None related objects (None indicates LEFT JOIN with no match)
+                    if related_obj is not None:
+                        related_objs.setdefault(relation_name, []).append(related_obj)
+
+        # Check if all direct field values are None (LEFT JOIN with no match)
+        all_fields_none = all(v is None for v in obj_kwargs.values())
+        if all_fields_none and obj_kwargs:
+            return None, field_idx
 
         obj: T = model(**obj_kwargs)
         for relation_name, rel_objs in related_objs.items():
@@ -863,6 +934,7 @@ class QueryBuilder:
         group_key: Any,
         limit: int,
         offset: int = 0,
+        join_type: JoinType | None = None,
     ) -> list[T]:
         """Fetch items for a specific group.
 
@@ -874,6 +946,7 @@ class QueryBuilder:
             group_key: The group key value to filter by.
             limit: Maximum items to return.
             offset: Number of items to skip.
+            join_type: Type of join for relationships ('inner', 'left', or 'outer').
 
         Returns:
             List of model instances for the group.
@@ -883,7 +956,7 @@ class QueryBuilder:
 
         # Build a fresh query for this group
         group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None)
+        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
 
         # Combine existing filters with group filter
         combined_filter = dict(self.filter) if self.filter else {}
@@ -912,6 +985,7 @@ class QueryBuilder:
         group_key: Any,
         limit: int,
         offset: int = 0,
+        join_type: JoinType | None = None,
     ) -> list[T]:
         """Fetch items for a specific group asynchronously.
 
@@ -923,6 +997,7 @@ class QueryBuilder:
             group_key: The group key value to filter by.
             limit: Maximum items to return.
             offset: Number of items to skip.
+            join_type: Type of join for relationships ('inner', 'left', or 'outer').
 
         Returns:
             List of model instances for the group.
@@ -931,7 +1006,7 @@ class QueryBuilder:
         group_expr = extractor.get_group_key_expression(column, group_config)
 
         group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None)
+        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
 
         combined_filter = dict(self.filter) if self.filter else {}
         group_builder.apply_filter(combined_filter)

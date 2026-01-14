@@ -95,10 +95,10 @@ Example: exclude posts where status is not equal to ``archived`` (i.e., keep all
 
 Notes:
 
-- The relationship filter applies to the joined rows. Root records that have no related rows
-  matching the filter will not be returned due to the inner join behavior. If you need to include
-  root records with an empty list of related items, you currently need a left outer join — which
-  is not yet configurable in QueryMate.
+- By default, QueryMate uses inner joins for relationships. Root records without
+  matching related rows will not be returned.
+- Use ``join_type="left"`` to include root records even when they have no related items
+  (they will have an empty list for the relationship field).
 - Combine with other operators like ``in``/``nin`` for multiple statuses.
 
 Python usage is equivalent when constructing queries programmatically:
@@ -108,5 +108,38 @@ Python usage is equivalent when constructing queries programmatically:
     qm = Querymate(
         select=["id", "name", {"posts": ["id", "title", "status"]}],
         filter={"posts.status": {"ne": "archived"}},
+    )
+    results = qm.run(db, User)
+
+Join Types
+----------
+
+By default, QueryMate uses **inner joins** for relationships, excluding parent records
+that have no children. Use ``join_type`` to change this behavior:
+
+.. code-block:: text
+
+    # Include users even if they have no posts (posts will be empty list)
+    /users?q={"select":["id","name",{"posts":["title"]}],"join_type":"left"}
+
+Available options:
+
+- ``inner`` (default): Excludes parent records without children
+- ``left`` or ``outer``: Includes all parent records; children will be ``[]`` if none exist
+
+Python usage:
+
+.. code-block:: python
+
+    # Inner join (default) - only users with posts
+    qm = Querymate(
+        select=["id", "name", {"posts": ["title"]}],
+    )
+    results = qm.run(db, User)
+
+    # Left join - all users, posts=[] for those without
+    qm = Querymate(
+        select=["id", "name", {"posts": ["title"]}],
+        join_type="left",
     )
     results = qm.run(db, User)

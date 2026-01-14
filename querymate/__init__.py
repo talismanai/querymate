@@ -65,6 +65,7 @@ from .core.grouping import GroupByConfig as GroupByConfig
 from .core.grouping import GroupedResponse as GroupedResponse
 from .core.grouping import GroupKeyExtractor as GroupKeyExtractor
 from .core.grouping import GroupResult as GroupResult
+from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
 from .types import PaginatedResponse as PaginatedResponse
