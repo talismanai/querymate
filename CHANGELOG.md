@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.9] - 2026-01-14
+
+### Patch Changes
+
+Support left [outer] join
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes
