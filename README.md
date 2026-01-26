@@ -464,7 +464,33 @@ querymate = Querymate(
 results = querymate.run(db, User)
 ```
 
-Note: QueryMate currently uses inner joins for relationships. Root rows without any matching related rows will be filtered out. If you need to include root rows with an empty related list, left outer joins are not yet configurable.
+### Join Types
+
+By default, QueryMate uses inner joins for relationships, excluding root records without matching related rows. Use `join_type` to change this behavior:
+
+```python
+# Inner join (default) - only users with posts
+querymate = Querymate(
+    select=["id", "name", {"posts": ["id", "title"]}],
+)
+results = querymate.run(db, User)
+
+# Left join - all users, posts=[] for those without
+querymate = Querymate(
+    select=["id", "name", {"posts": ["id", "title"]}],
+    join_type="left",
+)
+results = querymate.run(db, User)
+```
+
+Query parameter example:
+```text
+/users?q={"select":["id","name",{"posts":["title"]}],"join_type":"left"}
+```
+
+Available options:
+- `inner` (default): Excludes parent records without children
+- `left` or `outer`: Includes all parent records; children will be `[]` if none exist
 
 ---
 

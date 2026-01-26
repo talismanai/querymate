@@ -79,8 +79,14 @@ QueryMate accepts query parameters in JSON format through the ``q`` parameter. T
         "limit": 10,
         "offset": 0,
         "select": ["field1", "field2", {"relationship": ["field1", "field2"]}],
-        "group_by": "status"
+        "group_by": "status",
+        "join_type": "left"
     }
+
+The ``join_type`` parameter controls how relationships are joined:
+
+- ``inner`` (default): Excludes parent records without children
+- ``left`` or ``outer``: Includes all parent records; children will be ``[]`` if none exist
 
 For example:
 
