@@ -207,7 +207,7 @@ class Querymate(BaseModel):
 
     def _query_payload_json(self) -> str:
         """Serialize query payloads without default-only opt-in config blocks."""
-        payload = self.model_dump(by_alias=True)
+        payload = self.model_dump(by_alias=True, mode="json")
         if self.pagination.mode == "full":
             payload.pop("pagination", None)
         if self.grouping == GroupingOptions():
