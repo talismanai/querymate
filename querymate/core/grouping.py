@@ -4,7 +4,7 @@ This module provides support for grouping query results by field values,
 including dynamic date grouping with timezone support.
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -16,7 +16,7 @@ from querymate.core.config import settings
 from querymate.types import PaginationInfo
 
 
-class DateGranularity(str, Enum):
+class DateGranularity(StrEnum):
     """Supported date granularities for grouping."""
 
     YEAR = "year"
@@ -24,6 +24,37 @@ class DateGranularity(str, Enum):
     DAY = "day"
     HOUR = "hour"
     MINUTE = "minute"
+
+
+GroupingStrategy = Literal["legacy", "window"]
+GroupingFallback = Literal["legacy", "error"]
+
+
+class GroupingOptions(BaseModel):
+    """Opt-in grouped query execution controls."""
+
+    strategy: GroupingStrategy = Field(
+        default="legacy",
+        description="Grouped execution strategy. 'legacy' preserves existing behavior.",
+    )
+    include_counts: bool = Field(
+        default=True,
+        description="Include exact per-group totals in grouped pagination metadata.",
+    )
+    per_group_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Override the number of items fetched for each group.",
+    )
+    per_group_offset: int | None = Field(
+        default=None,
+        ge=0,
+        description="Override the offset applied within each group.",
+    )
+    fallback: GroupingFallback = Field(
+        default="legacy",
+        description="Fallback behavior when the requested strategy is unsupported.",
+    )
 
 
 # Format strings for each granularity (SQLite strftime format)

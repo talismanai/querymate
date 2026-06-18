@@ -4,6 +4,7 @@
 from datetime import datetime
 
 import pytest
+from sqlalchemy import event
 from sqlmodel import Session
 
 from querymate import Querymate
@@ -12,6 +13,7 @@ from querymate.core.grouping import (
     GroupByConfig,
     GroupKeyExtractor,
 )
+from querymate.core.query_builder import QueryBuilder
 
 from .models import Post, User
 
@@ -267,6 +269,152 @@ class TestGroupedQueries:
         active_group = next(g for g in groups if g["key"] == "active")
         assert len(active_group["items"]) == 2
         assert active_group["pagination"]["total"] == 2
+
+    def test_window_grouping_matches_legacy_for_simple_field(
+        self, populated_db: Session, monkeypatch: pytest.MonkeyPatch
+    ):
+        legacy = Querymate(
+            select=["id", "name", "status"],
+            group_by="status",
+            sort=["id"],
+            limit=10,
+        ).run_grouped(populated_db, User, dialect="sqlite")
+
+        def fetch_for_group_fails(self, *args, **kwargs):
+            raise AssertionError("legacy per-group fetch should not run")
+
+        monkeypatch.setattr(QueryBuilder, "fetch_for_group", fetch_for_group_fails)
+
+        window = Querymate(
+            select=["id", "name", "status"],
+            group_by="status",
+            sort=["id"],
+            limit=10,
+            grouping={"strategy": "window"},
+        ).run_grouped(populated_db, User, dialect="sqlite")
+
+        assert window == legacy
+
+    def test_window_grouping_respects_per_group_limit(self, populated_db: Session):
+        querymate = Querymate(
+            select=["id", "name", "status"],
+            group_by="status",
+            sort=["id"],
+            grouping={"strategy": "window", "per_group_limit": 1},
+        )
+
+        result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+
+        for group in result["groups"]:
+            assert len(group["items"]) <= 1
+        active_group = next(
+            group for group in result["groups"] if group["key"] == "active"
+        )
+        assert active_group["items"][0]["id"] == 1
+        assert active_group["pagination"]["total"] == 2
+
+    def test_window_grouping_respects_per_group_offset(self, populated_db: Session):
+        querymate = Querymate(
+            select=["id", "name", "status"],
+            group_by="status",
+            sort=["id"],
+            grouping={
+                "strategy": "window",
+                "per_group_limit": 1,
+                "per_group_offset": 1,
+            },
+        )
+
+        result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+
+        active_group = next(
+            group for group in result["groups"] if group["key"] == "active"
+        )
+        assert [item["id"] for item in active_group["items"]] == [2]
+
+    def test_window_grouping_preserves_sort_order(self, populated_db: Session):
+        querymate = Querymate(
+            select=["id", "name", "status", "age"],
+            group_by="status",
+            sort=["-age"],
+            grouping={"strategy": "window"},
+        )
+
+        result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+
+        for group in result["groups"]:
+            ages = [item["age"] for item in group["items"]]
+            assert ages == sorted(ages, reverse=True)
+
+    def test_window_grouping_without_counts_returns_has_next_and_avoids_count(
+        self, populated_db: Session
+    ):
+        statements: list[str] = []
+        bind = populated_db.get_bind()
+
+        def capture_sql(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement.lower())
+
+        event.listen(bind, "before_cursor_execute", capture_sql)
+        try:
+            querymate = Querymate(
+                select=["id", "name", "status"],
+                group_by="status",
+                sort=["id"],
+                grouping={
+                    "strategy": "window",
+                    "include_counts": False,
+                    "per_group_limit": 1,
+                },
+            )
+            result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+        finally:
+            event.remove(bind, "before_cursor_execute", capture_sql)
+
+        active_group = next(
+            group for group in result["groups"] if group["key"] == "active"
+        )
+        assert active_group["pagination"]["total"] is None
+        assert active_group["pagination"]["pages"] is None
+        assert active_group["pagination"]["has_next_page"] is True
+        assert not any("count(" in statement for statement in statements)
+
+    def test_window_grouping_supports_date_grouping(self, populated_db: Session):
+        querymate = Querymate(
+            select=["id", "name", "created_at"],
+            group_by={"field": "created_at", "granularity": "month"},
+            grouping={"strategy": "window"},
+        )
+
+        result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+
+        group_keys = [group["key"] for group in result["groups"]]
+        assert group_keys == ["2024-01", "2024-02", "2024-03"]
+
+    def test_window_grouping_falls_back_to_legacy_for_relationship_select(
+        self, populated_db: Session
+    ):
+        querymate = Querymate(
+            select=["id", "name", {"posts": ["id", "title"]}],
+            group_by="status",
+            grouping={"strategy": "window", "fallback": "legacy"},
+        )
+
+        result = querymate.run_grouped(populated_db, User, dialect="sqlite")
+
+        assert "groups" in result
+
+    def test_window_grouping_can_error_for_unsupported_shape(
+        self, populated_db: Session
+    ):
+        querymate = Querymate(
+            select=["id", "name", {"posts": ["id", "title"]}],
+            group_by="status",
+            grouping={"strategy": "window", "fallback": "error"},
+        )
+
+        with pytest.raises(ValueError, match="relationship select fields"):
+            querymate.run_grouped(populated_db, User, dialect="sqlite")
 
     def test_grouping_with_filter(self, populated_db: Session):
         """Test grouping with filter applied."""

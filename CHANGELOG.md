@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Minor Changes
+
+- Add opt-in no-count pagination modes: `pagination.mode = "none"` and
+  `pagination.mode = "has_next"`.
+- Add opt-in grouped window strategy for top-N-per-group queries, with legacy
+  fallback by default.
+
 ## [0.5.2] - 2025-05-21
 
 ### Minor Changes

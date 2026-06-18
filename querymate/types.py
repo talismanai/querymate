@@ -1,8 +1,8 @@
 """Type definitions for Querymate responses."""
 
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 
 T = TypeVar("T")
 
@@ -10,12 +10,23 @@ T = TypeVar("T")
 class PaginationInfo(BaseModel):
     """Pagination metadata for query results."""
 
-    total: int
+    total: int | None
     page: int
     size: int
-    pages: int
+    pages: int | None
     previous_page: int | None = None
     next_page: int | None = None
+    has_next_page: bool | None = None
+    mode: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_shape(self, handler: Any) -> dict[str, Any]:
+        """Keep legacy payloads from gaining new pagination fields."""
+        data = handler(self)
+        if self.mode is None:
+            data.pop("mode", None)
+            data.pop("has_next_page", None)
+        return cast(dict[str, Any], data)
 
 
 class PaginatedResponse(BaseModel, Generic[T]):

@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.datastructures import QueryParams
+from pydantic import ValidationError
 from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -14,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
+from querymate.core.query_builder import QueryBuilder
 from querymate.core.querymate import Querymate
 from tests.models import Post, User
 
@@ -667,6 +669,136 @@ def test_run_with_pagination_sync(db: Session) -> None:
     assert p.next_page == 2
 
 
+def test_run_with_pagination_full_mode_preserves_legacy_metadata(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        User(id=i, name=f"User {i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 4)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    count_called = False
+    original_count = QueryBuilder.count
+
+    def count_spy(self: QueryBuilder, db: Session) -> int:
+        nonlocal count_called
+        count_called = True
+        return original_count(self, db)
+
+    monkeypatch.setattr(QueryBuilder, "count", count_spy)
+
+    q = Querymate(select=["id", "name"], limit=2, offset=0)
+    result = q.run_paginated(db, User)
+
+    assert count_called is True
+    assert result.pagination.model_dump() == {
+        "total": 3,
+        "page": 1,
+        "size": 2,
+        "pages": 2,
+        "previous_page": None,
+        "next_page": 2,
+    }
+
+
+def test_run_with_pagination_none_mode_skips_count(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        User(id=i, name=f"User {i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 4)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    def count_fails(self: QueryBuilder, db: Session) -> int:
+        raise AssertionError("count should not run")
+
+    monkeypatch.setattr(QueryBuilder, "count", count_fails)
+
+    q = Querymate(
+        select=["id", "name"],
+        limit=2,
+        offset=0,
+        pagination={"mode": "none"},
+    )
+    result = q.run_paginated(db, User)
+
+    assert len(result.items) == 2
+    assert result.pagination.total is None
+    assert result.pagination.pages is None
+    assert result.pagination.has_next_page is None
+    assert result.pagination.mode == "none"
+
+
+def test_run_with_pagination_has_next_mode_fetches_extra_and_trims(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        User(id=i, name=f"User {i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 4)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    def count_fails(self: QueryBuilder, db: Session) -> int:
+        raise AssertionError("count should not run")
+
+    monkeypatch.setattr(QueryBuilder, "count", count_fails)
+
+    q = Querymate(
+        select=["id", "name"],
+        sort=["id"],
+        limit=2,
+        offset=0,
+        pagination={"mode": "has_next"},
+    )
+    result = q.run_paginated(db, User)
+
+    assert [item["id"] for item in result.items] == [1, 2]
+    assert result.pagination.total is None
+    assert result.pagination.pages is None
+    assert result.pagination.has_next_page is True
+    assert result.pagination.next_page == 2
+    assert result.pagination.mode == "has_next"
+
+
+def test_run_with_pagination_has_next_mode_last_page(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        User(id=i, name=f"User {i}", is_active=True, email=f"u{i}@ex.com", age=20 + i)
+        for i in range(1, 4)
+    ]
+    db.add_all(users)
+    db.commit()
+
+    def count_fails(self: QueryBuilder, db: Session) -> int:
+        raise AssertionError("count should not run")
+
+    monkeypatch.setattr(QueryBuilder, "count", count_fails)
+
+    q = Querymate(
+        select=["id", "name"],
+        sort=["id"],
+        limit=2,
+        offset=2,
+        pagination={"mode": "has_next"},
+    )
+    result = q.run_paginated(db, User)
+
+    assert [item["id"] for item in result.items] == [3]
+    assert result.pagination.has_next_page is False
+    assert result.pagination.next_page is None
+
+
+def test_invalid_pagination_mode_has_clear_validation_error() -> None:
+    with pytest.raises(ValidationError, match="full"):
+        Querymate(pagination={"mode": "invalid"})
+
+
 def test_run_with_pagination_last_page_sync(db: Session) -> None:
     # Seed 7 users
     users = [
@@ -743,6 +875,36 @@ async def test_run_with_pagination_async(async_db: AsyncSession) -> None:
     assert p.page == 2
     assert p.previous_page == 1
     assert p.next_page == 3
+
+
+@pytest.mark.asyncio
+async def test_run_with_pagination_has_next_async_skips_count(
+    async_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        User(id=i, name=f"A{i}", is_active=True, email=f"a{i}@ex.com", age=20 + i)
+        for i in range(1, 4)
+    ]
+    async_db.add_all(users)
+    await async_db.commit()
+
+    async def count_fails(self: QueryBuilder, db: AsyncSession) -> int:
+        raise AssertionError("count should not run")
+
+    monkeypatch.setattr(QueryBuilder, "count_async", count_fails)
+
+    q = Querymate(
+        select=["id", "name"],
+        sort=["id"],
+        limit=2,
+        offset=0,
+        pagination={"mode": "has_next"},
+    )
+    result = await q.run_async_paginated(async_db, User)
+
+    assert [item["id"] for item in result.items] == [1, 2]
+    assert result.pagination.has_next_page is True
+    assert result.pagination.total is None
 
 
 # ================================
@@ -903,7 +1065,9 @@ def test_join_type_in_querystring(db: Session) -> None:
 
     # Parse from query string
     query_params = QueryParams(
-        {"q": '{"select": ["id", "name", {"posts": ["id", "title"]}], "join_type": "left"}'}
+        {
+            "q": '{"select": ["id", "name", {"posts": ["id", "title"]}], "join_type": "left"}'
+        }
     )
     querymate = Querymate.from_qs(query_params)
 
