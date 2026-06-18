@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator, Callable, Generator
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI, Request
@@ -17,7 +17,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from querymate.core.query_builder import QueryBuilder
-from querymate.core.querymate import Querymate
+from querymate.core.querymate import PaginationOptions, Querymate
 from tests.models import Post, User
 
 
@@ -733,7 +733,7 @@ def test_run_with_pagination_none_mode_skips_count(
         select=["id", "name"],
         limit=2,
         offset=0,
-        pagination={"mode": "none"},
+        pagination=PaginationOptions(mode="none"),
     )
     result = q.run_paginated(db, User)
 
@@ -764,7 +764,7 @@ def test_run_with_pagination_has_next_mode_fetches_extra_and_trims(
         sort=["id"],
         limit=2,
         offset=0,
-        pagination={"mode": "has_next"},
+        pagination=PaginationOptions(mode="has_next"),
     )
     result = q.run_paginated(db, User)
 
@@ -796,7 +796,7 @@ def test_run_with_pagination_has_next_mode_last_page(
         sort=["id"],
         limit=2,
         offset=2,
-        pagination={"mode": "has_next"},
+        pagination=PaginationOptions(mode="has_next"),
     )
     result = q.run_paginated(db, User)
 
@@ -807,7 +807,7 @@ def test_run_with_pagination_has_next_mode_last_page(
 
 def test_invalid_pagination_mode_has_clear_validation_error() -> None:
     with pytest.raises(ValidationError, match="full"):
-        Querymate(pagination={"mode": "invalid"})
+        Querymate(pagination=cast(Any, {"mode": "invalid"}))
 
 
 def test_run_with_pagination_last_page_sync(db: Session) -> None:
@@ -909,7 +909,7 @@ async def test_run_with_pagination_has_next_async_skips_count(
         sort=["id"],
         limit=2,
         offset=0,
-        pagination={"mode": "has_next"},
+        pagination=PaginationOptions(mode="has_next"),
     )
     result = await q.run_async_paginated(async_db, User)
 
