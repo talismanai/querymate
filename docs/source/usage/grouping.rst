@@ -304,6 +304,18 @@ By default, QueryMate uses PostgreSQL syntax for date operations. For SQLite (co
     # For PostgreSQL (default)
     result = querymate.run_grouped(db, User, dialect="postgresql")
 
+Query cost
+----------
+
+A grouped request costs a constant number of queries no matter how many distinct
+groups the data contains: one to list the group keys with their counts, one that pages
+every group at once with ``ROW_NUMBER() OVER (PARTITION BY ...)``, one to load the
+records, plus one per eagerly loaded collection.
+
+Grouping previously issued one query per group, so the cost of a request depended on a
+property of the data rather than of the request - a query over a field with a thousand
+distinct values issued a thousand round trips.
+
 Best Practices
 --------------
 

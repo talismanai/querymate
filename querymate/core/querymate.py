@@ -629,60 +629,63 @@ class Querymate(BaseModel):
         group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
 
         per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        items_by_key = query_builder.fetch_all_groups(
+            db,
+            group_config,
+            extractor,
+            limit=per_group_limit,
+            offset=self.offset or 0,
+        )
+        return self._assemble_grouped_response(
+            query_builder, group_keys, items_by_key, per_group_limit
+        )
+
+    def _assemble_grouped_response(
+        self,
+        query_builder: QueryBuilder,
+        group_keys: list[tuple[Any, int]],
+        items_by_key: dict[Any, list[Any]],
+        per_group_limit: int,
+    ) -> dict[str, Any]:
+        """Serialize the fetched groups and apply the overall cap.
+
+        Every group's page is already loaded; this only decides how many of them fit
+        under MAX_LIMIT and marks the response truncated when some are dropped.
+        """
         max_total = settings.MAX_LIMIT
         total_fetched = 0
         truncated = False
         groups: list[GroupResult] = []
 
         for group_key, group_total in group_keys:
-            if total_fetched >= max_total:
-                truncated = True
-                break
-
-            # Calculate how many items we can fetch for this group
+            items = items_by_key.get(group_key, [])
             remaining = max_total - total_fetched
-            effective_limit = min(per_group_limit, remaining)
-
-            if effective_limit <= 0:
+            if remaining <= 0:
                 truncated = True
                 break
-
-            # Fetch items for this group
-            items = query_builder.fetch_for_group(
-                db,
-                query_builder.model,
-                group_config,
-                extractor,
-                group_key,
-                limit=effective_limit,
-                offset=self.offset or 0,
-                join_type=self.join_type,
-            )
+            if len(items) > remaining:
+                items = items[:remaining]
+                truncated = True
 
             serialized = query_builder.serialize(items)
             total_fetched += len(serialized)
-
-            # Build pagination for this group
-            pagination = self._pagination_for_group(
-                total=group_total,
-                limit=per_group_limit,
-                offset=self.offset or 0,
-            )
 
             groups.append(
                 GroupResult(
                     key=str(group_key) if group_key is not None else None,
                     items=serialized,
-                    pagination=pagination,
+                    pagination=self._pagination_for_group(
+                        total=group_total,
+                        limit=per_group_limit,
+                        offset=self.offset or 0,
+                    ),
                 )
             )
 
-            # Check if we hit the limit mid-group
-            if len(serialized) < effective_limit and effective_limit < per_group_limit:
-                truncated = True
+        if len(groups) < len(group_keys):
+            truncated = True
 
-        response = GroupedResponse(groups=groups, truncated=truncated)
-        return response.model_dump()
+        return GroupedResponse(groups=groups, truncated=truncated).model_dump()
 
     async def run_grouped_async(
         self,
@@ -736,56 +739,16 @@ class Querymate(BaseModel):
         )
 
         per_group_limit = self.limit or settings.DEFAULT_LIMIT
-        max_total = settings.MAX_LIMIT
-        total_fetched = 0
-        truncated = False
-        groups: list[GroupResult] = []
-
-        for group_key, group_total in group_keys:
-            if total_fetched >= max_total:
-                truncated = True
-                break
-
-            remaining = max_total - total_fetched
-            effective_limit = min(per_group_limit, remaining)
-
-            if effective_limit <= 0:
-                truncated = True
-                break
-
-            items = await query_builder.fetch_for_group_async(
-                db,
-                query_builder.model,
-                group_config,
-                extractor,
-                group_key,
-                limit=effective_limit,
-                offset=self.offset or 0,
-                join_type=self.join_type,
-            )
-
-            serialized = query_builder.serialize(items)
-            total_fetched += len(serialized)
-
-            pagination = self._pagination_for_group(
-                total=group_total,
-                limit=per_group_limit,
-                offset=self.offset or 0,
-            )
-
-            groups.append(
-                GroupResult(
-                    key=str(group_key) if group_key is not None else None,
-                    items=serialized,
-                    pagination=pagination,
-                )
-            )
-
-            if len(serialized) < effective_limit and effective_limit < per_group_limit:
-                truncated = True
-
-        response = GroupedResponse(groups=groups, truncated=truncated)
-        return response.model_dump()
+        items_by_key = await query_builder.fetch_all_groups_async(
+            db,
+            group_config,
+            extractor,
+            limit=per_group_limit,
+            offset=self.offset or 0,
+        )
+        return self._assemble_grouped_response(
+            query_builder, group_keys, items_by_key, per_group_limit
+        )
 
     def _pagination_for_group(
         self, total: int, limit: int, offset: int

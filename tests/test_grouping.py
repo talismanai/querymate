@@ -13,6 +13,7 @@ from querymate.core.grouping import (
     GroupKeyExtractor,
 )
 
+from .helpers import capture_sql
 from .models import Post, User
 
 # -----------------------------------------------------------------------------
@@ -476,3 +477,65 @@ class TestGroupedQueries:
             assert "pages" in pagination
             assert pagination["page"] == 1
             assert pagination["size"] == 1
+
+
+class TestGroupingQueryCount:
+    """Grouping used to issue one query per distinct group key.
+
+    A grouped request therefore cost time proportional to how many distinct values
+    the data happened to contain - a property of the data, not of the request. A
+    window function pages every group in one pass instead.
+    """
+
+    def _seed(self, db: Session, groups: int) -> None:
+        db.add(User(id=1, name="A", email="a@x.com", age=30, is_active=True))
+        for idx in range(1, groups * 3 + 1):
+            db.add(
+                Post(
+                    id=idx,
+                    title=f"Post {idx}",
+                    content="c",
+                    user_id=1,
+                    status=f"status-{idx % groups}",
+                )
+            )
+        db.commit()
+
+    def test_query_count_does_not_grow_with_group_count(self, db: Session) -> None:
+        self._seed(db, groups=25)
+
+        querymate = Querymate(
+            select=["id", "title", "status"], group_by="status", limit=5
+        )
+        with capture_sql(db) as statements:
+            result = querymate.run_grouped(db, Post, dialect="sqlite")
+
+        assert len(result["groups"]) == 25
+        assert len(statements) <= 3, f"expected a constant count, got {statements}"
+
+    def test_every_group_is_paged_to_the_limit(self, db: Session) -> None:
+        self._seed(db, groups=4)
+
+        querymate = Querymate(
+            select=["id", "title", "status"], group_by="status", limit=2
+        )
+        result = querymate.run_grouped(db, Post, dialect="sqlite")
+
+        assert len(result["groups"]) == 4
+        for group in result["groups"]:
+            assert len(group["items"]) == 2
+            assert group["pagination"]["total"] == 3
+
+    def test_offset_applies_within_each_group(self, db: Session) -> None:
+        self._seed(db, groups=2)
+
+        first = Querymate(select=["id"], group_by="status", limit=1).run_grouped(
+            db, Post, dialect="sqlite"
+        )
+        second = Querymate(
+            select=["id"], group_by="status", limit=1, offset=1
+        ).run_grouped(db, Post, dialect="sqlite")
+
+        for group_a, group_b in zip(first["groups"], second["groups"], strict=True):
+            assert group_a["key"] == group_b["key"]
+            assert group_a["items"] != group_b["items"]

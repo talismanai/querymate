@@ -6,42 +6,11 @@ native eager loading. The rewrite turned all six green and the markers came off;
 now guard against regressing back into any of those behaviours.
 """
 
-from collections.abc import Generator
-from contextlib import contextmanager
-from typing import Any
-
-from sqlalchemy import event
 from sqlmodel import Session
 
 from querymate.core.querymate import Querymate
+from tests.helpers import capture_sql
 from tests.models import Comment, Post, Profile, Tag, User
-
-
-@contextmanager
-def capture_sql(session: Session) -> Generator[list[str], None, None]:
-    """Collect every SQL statement executed while the block runs.
-
-    Lets tests assert a constant number of queries regardless of how much data is in
-    the database, which is the only reliable way to catch an N+1.
-    """
-    statements: list[str] = []
-    engine = session.get_bind()
-
-    def before(
-        conn: Any,
-        cursor: Any,
-        statement: str,
-        params: Any,
-        context: Any,
-        executemany: bool,
-    ) -> None:
-        statements.append(statement)
-
-    event.listen(engine, "before_cursor_execute", before)
-    try:
-        yield statements
-    finally:
-        event.remove(engine, "before_cursor_execute", before)
 
 
 def _user(idx: int) -> User:

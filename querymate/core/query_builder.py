@@ -1155,6 +1155,141 @@ class QueryBuilder:
         results = await db.execute(keys_query)
         return [(row[0], row[1]) for row in results.all()]
 
+    def _group_order_by(self) -> list[Any]:
+        """Ordering used inside each group's window.
+
+        Falls back to the primary key so ROW_NUMBER is deterministic; custom
+        value-ordering entries are skipped, having no meaning inside a partition.
+        """
+        expressions: list[Any] = []
+        for sort_param in self.sort:
+            if isinstance(sort_param, dict):
+                continue
+            descending = sort_param.startswith("-")
+            field = sort_param[1:] if sort_param[0] in "+-" else sort_param
+            expression = self._sort_expression(field, descending=descending)
+            expressions.append(expression.desc() if descending else expression)
+
+        if not expressions:
+            mapper: Mapper = inspect(self.model)
+            expressions = [next(col for col in mapper.primary_key)]
+        return expressions
+
+    def _grouped_page_query(
+        self,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        limit: int,
+        offset: int,
+    ) -> Any:
+        """Build one query returning the page of every group at once.
+
+        ``ROW_NUMBER() OVER (PARTITION BY <group key>)`` numbers rows within each
+        group, so a single pass can take rows ``offset+1..offset+limit`` of every
+        group. This replaces one query per group, which made a grouped request cost
+        time proportional to how many distinct values the data happened to contain.
+        """
+        column = self._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+
+        row_number = (
+            func.row_number()
+            .over(partition_by=group_expr, order_by=self._group_order_by())
+            .label("_row_number")
+        )
+        numbered = select(
+            pk_col.label("_pk"), group_expr.label("_group_key"), row_number
+        )
+        if self.filter:
+            filters = FilterBuilder(self.model).build(self.filter)
+            if filters:
+                numbered = numbered.where(*filters)
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            numbered = numbered.where(root_scope)
+        for condition in self._required_conditions:
+            numbered = numbered.where(condition)
+
+        windowed = numbered.subquery()
+        return (
+            select(windowed.c._pk, windowed.c._group_key)
+            .where(
+                windowed.c._row_number > offset,
+                windowed.c._row_number <= offset + limit,
+            )
+            .order_by(windowed.c._group_key, windowed.c._row_number)
+        )
+
+    def _assemble_groups(
+        self, rows: Sequence[Any], entities: Sequence[Any]
+    ) -> dict[Any, list[Any]]:
+        """Map the paged (pk, group_key) rows onto the loaded entities, in order."""
+        mapper: Mapper = inspect(self.model)
+        pk_name = next(col for col in mapper.primary_key).name
+        by_pk = {getattr(entity, pk_name): entity for entity in entities}
+
+        grouped: dict[Any, list[Any]] = {}
+        for pk, group_key in rows:
+            entity = by_pk.get(pk)
+            if entity is not None:
+                grouped.setdefault(group_key, []).append(entity)
+        return grouped
+
+    def fetch_all_groups(
+        self,
+        db: Session,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        limit: int,
+        offset: int = 0,
+    ) -> dict[Any, list[Any]]:
+        """Fetch the page of every group using a constant number of queries.
+
+        Two statements plus one per eagerly loaded relationship, regardless of how
+        many groups exist.
+        """
+        rows = list(
+            db.exec(
+                self._grouped_page_query(group_config, extractor, limit, offset)
+            ).all()
+        )
+        if not rows:
+            return {}
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+        entities = (
+            db.exec(self.query.where(pk_col.in_([row[0] for row in rows])))
+            .unique()
+            .all()
+        )
+        return self._assemble_groups(rows, list(entities))
+
+    async def fetch_all_groups_async(
+        self,
+        db: AsyncSession,
+        group_config: "GroupByConfig",
+        extractor: "GroupKeyExtractor",
+        limit: int,
+        offset: int = 0,
+    ) -> dict[Any, list[Any]]:
+        """Async counterpart of :meth:`fetch_all_groups`."""
+        result = await db.execute(
+            self._grouped_page_query(group_config, extractor, limit, offset)
+        )
+        rows = list(result.all())
+        if not rows:
+            return {}
+
+        mapper: Mapper = inspect(self.model)
+        pk_col = next(col for col in mapper.primary_key)
+        entity_result = await db.execute(
+            self.query.where(pk_col.in_([row[0] for row in rows]))
+        )
+        return self._assemble_groups(rows, list(entity_result.unique().scalars().all()))
+
     def fetch_for_group(
         self,
         db: Session,
