@@ -6,6 +6,20 @@ __version__ = "0.5.2"  # Update this with your actual version
 
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
+from .core.exceptions import DepthExceededError as DepthExceededError
+from .core.exceptions import InvalidQueryError as InvalidQueryError
+from .core.exceptions import QuerymateError as QuerymateError
+from .core.exceptions import SelectionTooLargeError as SelectionTooLargeError
+from .core.exceptions import UnknownFieldError as UnknownFieldError
+from .core.exceptions import (
+    UnknownRelationshipError as UnknownRelationshipError,
+)
+from .core.exceptions import (
+    UnsupportedOperatorError as UnsupportedOperatorError,
+)
+from .core.exceptions import (
+    install_exception_handler as install_exception_handler,
+)
 from .core.filter import BlankPredicate as BlankPredicate
 from .core.filter import ContainsPredicate as ContainsPredicate
 from .core.filter import DoesNotMatchAllPredicate as DoesNotMatchAllPredicate

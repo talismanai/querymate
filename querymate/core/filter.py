@@ -9,6 +9,11 @@ from sqlalchemy.sql.type_api import TypeEngine
 from sqlmodel import SQLModel, inspect
 
 from querymate.core.config import settings
+from querymate.core.exceptions import (
+    UnknownFieldError,
+    UnknownRelationshipError,
+    UnsupportedOperatorError,
+)
 
 T = TypeVar("T")
 
@@ -547,7 +552,8 @@ class DefaultFieldResolver:
                 else:
                     current = attr
             else:
-                raise AttributeError(f"Field {part} not found in {current}")
+                name = getattr(current, "__name__", str(current))
+                raise UnknownFieldError(part, name)
         return current
 
 
@@ -720,7 +726,7 @@ class FilterBuilder:
         expressions: list[Any] = []
         for operator, value in condition.items():
             if operator not in settings.FILTER_OPERATORS:
-                raise ValueError(f"Unsupported operator: {operator}")
+                raise UnsupportedOperatorError(operator, settings.FILTER_OPERATORS)
             casted_value = self._cast_value(column, operator, value)
             expressions.append(
                 Predicate.registry[operator]().apply(column, casted_value)
@@ -778,8 +784,10 @@ class FilterBuilder:
             mapper: Mapper = inspect(model)
             relationship = mapper.relationships.get(relationship_name)
             if relationship is None:
-                raise AttributeError(
-                    f"Field {relationship_name} not found in {model.__name__}"
+                raise UnknownRelationshipError(
+                    relationship_name,
+                    model.__name__,
+                    set(mapper.relationships.keys()),
                 )
             related_model: type[SQLModel] = relationship.mapper.class_
             inner_conditions = self._parse(related_model, sub_filters)

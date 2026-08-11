@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
 from querymate.core.config import settings
+from querymate.core.exceptions import InvalidQueryError
 from querymate.core.grouping import (
     GroupByConfig,
     GroupedResponse,
@@ -134,28 +135,45 @@ class Querymate(BaseModel):
             Querymate: A new QueryMate instance.
 
         Raises:
-            ValueError: If the query parameter contains invalid JSON.
+            InvalidQueryError: If the query parameter contains invalid JSON.
         """
         # First try to get the main query parameter
         query: str | None = query_params.get(settings.QUERY_PARAM_NAME)
         if not query:
             return cls()
-        try:
-            return cls.model_validate(json.loads(query))
-        except json.JSONDecodeError as e:
-            raise ValueError("Invalid JSON in query parameter") from e
+        return cls._parse(query)
 
     @classmethod
     def from_query_param(cls, query_param: str) -> "Querymate":
-        """Convert a query parameter string to a QueryMate instance.
+        """Convert a URL-encoded query parameter string to a QueryMate instance.
 
         Args:
             query_param (str): The query parameter string.
 
         Returns:
             Querymate: A new QueryMate instance.
+
+        Raises:
+            InvalidQueryError: If the query parameter contains invalid JSON.
         """
-        return cls.model_validate(json.loads(unquote(query_param)))
+        return cls._parse(unquote(query_param))
+
+    @classmethod
+    def _parse(cls, raw: str) -> "Querymate":
+        """Parse the JSON of a query parameter into an instance.
+
+        Shared so both entry points reject malformed JSON the same way; previously
+        ``from_query_param`` let a raw JSONDecodeError escape as a 500.
+
+        Raises:
+            InvalidQueryError: If ``raw`` is not valid JSON.
+        """
+        try:
+            return cls.model_validate(json.loads(raw))
+        except json.JSONDecodeError as e:
+            raise InvalidQueryError(
+                "Invalid JSON in query parameter", parameter=settings.QUERY_PARAM_NAME
+            ) from e
 
     @classmethod
     def fastapi_dependency(cls, request: Request) -> "Querymate":

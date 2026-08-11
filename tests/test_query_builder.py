@@ -555,11 +555,10 @@ def test_select_with_invalid_field() -> None:
 
 
 def test_select_with_invalid_relationship() -> None:
-    """An unknown relationship is skipped with a warning, not an error."""
+    """An unknown relationship is refused, like an unknown field."""
     builder = QueryBuilder(User)
-    builder.apply_select(["id", {"invalid_relationship": ["field"]}])
-
-    assert builder.select == ["id"]
+    with pytest.raises(AttributeError, match="invalid_relationship"):
+        builder.apply_select(["id", {"invalid_relationship": ["field"]}])
 
 
 def test_select_with_invalid_relationship_fields() -> None:

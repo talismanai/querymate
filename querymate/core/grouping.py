@@ -4,8 +4,10 @@ This module provides support for grouping query results by field values,
 including dynamic date grouping with timezone support.
 """
 
-from enum import Enum
+from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
@@ -16,7 +18,7 @@ from querymate.core.config import settings
 from querymate.types import PaginationInfo
 
 
-class DateGranularity(str, Enum):
+class DateGranularity(StrEnum):
     """Supported date granularities for grouping."""
 
     YEAR = "year"
@@ -44,26 +46,31 @@ POSTGRES_TRUNC_PRECISION: dict[DateGranularity, str] = {
     DateGranularity.MINUTE: "minute",
 }
 
-# Common IANA timezone to UTC offset mapping (hours)
-IANA_TO_OFFSET: dict[str, float] = {
-    "UTC": 0,
-    "America/New_York": -5,
-    "America/Chicago": -6,
-    "America/Denver": -7,
-    "America/Los_Angeles": -8,
-    "America/Sao_Paulo": -3,
-    "America/Buenos_Aires": -3,
-    "Europe/London": 0,
-    "Europe/Paris": 1,
-    "Europe/Berlin": 1,
-    "Europe/Moscow": 3,
-    "Asia/Dubai": 4,
-    "Asia/Kolkata": 5.5,
-    "Asia/Shanghai": 8,
-    "Asia/Tokyo": 9,
-    "Australia/Sydney": 10,
-    "Pacific/Auckland": 12,
-}
+
+def resolve_timezone_offset(timezone: str) -> float:
+    """Return a timezone's current UTC offset in hours.
+
+    Resolved through :mod:`zoneinfo` rather than a hardcoded table. The table this
+    replaced listed seventeen zones - anything else was rejected - and recorded each
+    one's standard offset, so half the year every zone observing daylight saving was
+    silently off by an hour.
+
+    Args:
+        timezone: IANA timezone name, e.g. ``"America/Sao_Paulo"``.
+
+    Returns:
+        float: Offset in hours, negative west of UTC.
+
+    Raises:
+        ValueError: If the timezone is not known to the system database.
+    """
+    try:
+        zone = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"Unsupported timezone: {timezone}.") from exc
+
+    offset = datetime.now(zone).utcoffset()
+    return offset.total_seconds() / 3600 if offset is not None else 0.0
 
 
 class GroupByConfig(BaseModel):
@@ -125,11 +132,10 @@ class GroupByConfig(BaseModel):
     def validate_timezone_settings(self) -> "GroupByConfig":
         if self.tz_offset is not None and self.timezone is not None:
             raise ValueError("Cannot specify both tz_offset and timezone")
-        if self.timezone is not None and self.timezone not in IANA_TO_OFFSET:
-            raise ValueError(
-                f"Unsupported timezone: {self.timezone}. "
-                f"Supported: {list(IANA_TO_OFFSET.keys())}"
-            )
+        if self.timezone is not None:
+            # Validate eagerly so a bad zone fails when the query is parsed, not
+            # halfway through building SQL.
+            resolve_timezone_offset(self.timezone)
         return self
 
     @classmethod
@@ -168,7 +174,7 @@ class GroupByConfig(BaseModel):
         if self.tz_offset is not None:
             return self.tz_offset
         if self.timezone is not None:
-            return IANA_TO_OFFSET.get(self.timezone, 0)
+            return resolve_timezone_offset(self.timezone)
         return 0
 
     @property

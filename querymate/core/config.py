@@ -123,6 +123,18 @@ class QueryMateSettings(BaseSettings):
     SORT_ASC_PREFIX: str = Field(default="+", description="Prefix for ascending sort")
 
     # Field selection
+    MAX_SELECT_DEPTH: int = Field(
+        default=5,
+        description=(
+            "Maximum relationship nesting depth in a selection. Each level costs a "
+            "query, so an unbounded depth lets one request be made arbitrarily "
+            "expensive."
+        ),
+    )
+    MAX_SELECT_NODES: int = Field(
+        default=200,
+        description="Maximum number of fields and relationships in one selection",
+    )
     INCLUDE_PRIMARY_KEYS: bool = Field(
         default=True, description="Always include primary keys"
     )

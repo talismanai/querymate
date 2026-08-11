@@ -11,6 +11,12 @@ from sqlmodel import Session, SQLModel, inspect, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from querymate.core.config import settings
+from querymate.core.exceptions import (
+    DepthExceededError,
+    SelectionTooLargeError,
+    UnknownFieldError,
+    UnknownRelationshipError,
+)
 from querymate.core.filter import FilterBuilder
 from querymate.core.scope import BoundScopes
 from querymate.types import FieldSelection, NormalizedSelection
@@ -185,6 +191,39 @@ class QueryBuilder:
             return None
         return self.scopes.condition_for(model)
 
+    def _enforce_selection_bounds(self, fields: list[NormalizedSelection]) -> None:
+        """Reject selections that are too deep or too large.
+
+        Each relationship level costs a query and can widen the result set, and models
+        commonly reference each other, so an unbounded selection lets one request be
+        made arbitrarily expensive. Both ceilings are configurable via
+        ``QUERYMATE_MAX_SELECT_DEPTH`` and ``QUERYMATE_MAX_SELECT_NODES``.
+
+        Raises:
+            DepthExceededError: If the selection nests deeper than allowed.
+            SelectionTooLargeError: If it contains more nodes than allowed.
+        """
+
+        def measure(
+            selection: Sequence[NormalizedSelection], depth: int
+        ) -> tuple[int, int]:
+            if depth > settings.MAX_SELECT_DEPTH:
+                raise DepthExceededError(depth, settings.MAX_SELECT_DEPTH)
+            nodes = 0
+            deepest = depth
+            for field in selection:
+                nodes += 1
+                if isinstance(field, dict):
+                    for nested_fields in field.values():
+                        child_nodes, child_depth = measure(nested_fields, depth + 1)
+                        nodes += child_nodes
+                        deepest = max(deepest, child_depth)
+            return nodes, deepest
+
+        total_nodes, _ = measure(fields, 1)
+        if total_nodes > settings.MAX_SELECT_NODES:
+            raise SelectionTooLargeError(total_nodes, settings.MAX_SELECT_NODES)
+
     def _normalize_select_fields(
         self,
         model: type[SQLModel],
@@ -224,12 +263,9 @@ class QueryBuilder:
                     normalized_field_names = sorted(valid_model_fields)
                 else:
                     if field not in valid_model_fields:
-                        logger.warning(
-                            f"Invalid field: {field}. Valid fields: {valid_model_fields}"
+                        raise UnknownFieldError(
+                            field, model.__name__, valid_model_fields
                         )
-                        if field not in normalized_field_names:
-                            normalized_field_names.append(field)
-                        continue
                     if field not in normalized_field_names:
                         normalized_field_names.append(field)
             elif isinstance(field, dict):
@@ -238,12 +274,11 @@ class QueryBuilder:
                         valid_relationships.get(relationship_name)
                     )
                     if relationship_property is None:
-                        logger.warning(
-                            "Invalid relationship: %s. Valid relationships: %s",
+                        raise UnknownRelationshipError(
                             relationship_name,
+                            model.__name__,
                             set(valid_relationships.keys()),
                         )
-                        continue
                     relationship_model: type[SQLModel] = (
                         relationship_property.mapper.class_
                     )
@@ -324,19 +359,9 @@ class QueryBuilder:
         """
         options: list[Any] = []
 
-        valid_model_fields: list[str] = list(model.model_fields.keys())
-        scalar_fields = []
-        for field in fields:
-            if not isinstance(field, str):
-                continue
-            if field not in valid_model_fields:
-                # Refuse rather than quietly drop it: silently returning a response
-                # missing a field the caller asked for is worse than failing.
-                raise AttributeError(
-                    f"Field {field} not found in {model.__name__}. "
-                    f"Valid fields: {valid_model_fields}"
-                )
-            scalar_fields.append(field)
+        # Field names were validated during normalization, which is the single place
+        # that decides whether a selection is acceptable.
+        scalar_fields = [field for field in fields if isinstance(field, str)]
         if scalar_fields:
             # load_only always keeps primary keys, which selectinload needs anyway.
             options.append(
@@ -352,12 +377,11 @@ class QueryBuilder:
                     inspection.relationships.get(relationship_name)
                 )
                 if relationship_property is None:
-                    logger.warning(
-                        "Invalid relationship: %s. Valid relationships: %s",
+                    raise UnknownRelationshipError(
                         relationship_name,
+                        model.__name__,
                         set(inspection.relationships.keys()),
                     )
-                    continue
 
                 relationship_path = (*path, relationship_name)
                 attribute = self._relationship_attribute(
@@ -474,6 +498,7 @@ class QueryBuilder:
         if not fields:
             fields = list(self.model.model_fields.keys())
         normalized_fields = self._normalize_select_fields(self.model, fields)
+        self._enforce_selection_bounds(normalized_fields)
         self.select = normalized_fields
 
         self.query = (
@@ -657,14 +682,22 @@ class QueryBuilder:
             builder.limit(10)
             ```
         """
-        if not limit:
+        if limit is None:
             return self
         if limit < 0:
             logger.warning(
                 f"Limit is negative ({limit}), using default limit ({settings.DEFAULT_LIMIT})"
             )
             self.limit = settings.DEFAULT_LIMIT
+        elif limit > settings.MAX_LIMIT:
+            # MAX_LIMIT used to be enforced only by the Pydantic model, so callers
+            # reaching the builder directly could ask for any number of rows.
+            logger.warning(
+                f"Limit {limit} exceeds the maximum ({settings.MAX_LIMIT}); clamping."
+            )
+            self.limit = settings.MAX_LIMIT
         else:
+            # limit=0 is a legitimate request for no rows, distinct from "no limit".
             self.limit = limit
 
         self.query = self.query.limit(self.limit)
@@ -684,7 +717,7 @@ class QueryBuilder:
             builder.offset(10)  # Skip the first 10 records
             ```
         """
-        if not offset:
+        if offset is None:
             return self
         if offset < 0:
             logger.warning(
@@ -869,14 +902,10 @@ class QueryBuilder:
         for condition in self._required_conditions:
             count_query = count_query.where(condition)
 
-        # For sync sessions, exec() returns ScalarResult; use one()/first()
-        result_obj = db.exec(count_query)
-        try:
-            value_sync: int = result_obj.one()
-            return int(value_sync)
-        except Exception:
-            value_sync_opt: int | None = result_obj.first()
-            return int(value_sync_opt or 0)
+        # A COUNT always yields exactly one row, so one() cannot legitimately
+        # fail. The fallback this replaced turned any real error - a bad filter, a
+        # broken connection - into a silent zero.
+        return int(db.exec(count_query).one())
 
     async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
         """Execute the query asynchronously and return the results.
@@ -949,12 +978,7 @@ class QueryBuilder:
             count_query = count_query.where(condition)
 
         results = await db.execute(count_query)
-        # Prefer scalar_one if available; otherwise fall back to scalar/first
-        try:
-            value_async: int | None = results.scalar_one()
-        except Exception:
-            value_async = results.scalar()
-        return int(value_async or 0)
+        return int(results.scalar_one())
 
     # -------------------------------------------------------------------------
     # Grouping Methods
@@ -1221,12 +1245,7 @@ class QueryBuilder:
 
         count_query = count_query.where(group_expr == group_key)
 
-        result = db.exec(count_query)
-        try:
-            return int(result.one())
-        except Exception:
-            value = result.first()
-            return int(value or 0)
+        return int(db.exec(count_query).one())
 
     async def count_for_group_async(
         self,
@@ -1271,8 +1290,4 @@ class QueryBuilder:
         count_query = count_query.where(group_expr == group_key)
 
         result = await db.execute(count_query)
-        try:
-            return int(result.scalar_one())
-        except Exception:
-            value = result.scalar()
-            return int(value or 0)
+        return int(result.scalar_one())

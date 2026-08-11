@@ -47,6 +47,8 @@ from typing import Any, TypeVar, cast
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import SQLModel
 
+from querymate.core.exceptions import QuerymateError
+
 T = TypeVar("T", bound=SQLModel)
 
 # A resolver returns a SQLAlchemy boolean condition, or None for "no restriction".
@@ -57,13 +59,18 @@ ScopeResolver = Callable[["ScopeContext"], ScopeCondition | Awaitable[ScopeCondi
 _ALLOW_ALL = "__querymate_allow_all__"
 
 
-class UnscopedModelError(Exception):
+class UnscopedModelError(QuerymateError):
     """Raised when a model is queried without a registered scope in strict mode.
 
     Strict mode is the default: forgetting to register a scope for a new model is the
     most likely and most costly failure mode of this design, so QueryMate refuses the
     query instead of silently returning unfiltered rows.
+
+    Unlike the other QueryMate errors this is a 500, not a 4xx: the caller did nothing
+    wrong, the application is missing a scope registration.
     """
+
+    status_code = 500
 
     def __init__(self, model: type[SQLModel]) -> None:
         self.model = model
@@ -71,7 +78,8 @@ class UnscopedModelError(Exception):
             f"No authorization scope registered for model '{model.__name__}'. "
             f"Register one with @scopes.register({model.__name__}), or mark it as "
             f"explicitly unrestricted with scopes.allow_all({model.__name__}). "
-            f"To opt out of this check entirely, bind with strict=False."
+            f"To opt out of this check entirely, bind with strict=False.",
+            model=model.__name__,
         )
 
 

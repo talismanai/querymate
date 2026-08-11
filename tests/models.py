@@ -17,7 +17,7 @@ class User(SQLModel, table=True):
     age: int
     is_active: bool
     status: str = Field(default="active")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     birth_date: date | None = None
     last_login: datetime | None = None
     posts: list["Post"] = Relationship(back_populates="user")
@@ -33,7 +33,7 @@ class Post(SQLModel, table=True):
     status: str = Field(default="draft")
     user_id: int = Field(foreign_key="user.id")
     team_id: int | None = Field(default=None, foreign_key="team.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     published_at: datetime | None = None
     user: "User" = Relationship(back_populates="posts")
     comments: list["Comment"] = Relationship(back_populates="post")
