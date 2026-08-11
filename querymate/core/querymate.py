@@ -1,10 +1,11 @@
 import json
-from typing import Any, Literal, TypeVar
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode
 
-from fastapi import Request
+from fastapi import Query, Request
 from fastapi.datastructures import QueryParams
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
@@ -15,6 +16,14 @@ from querymate.core.grouping import (
     GroupedResponse,
     GroupKeyExtractor,
     GroupResult,
+)
+from querymate.core.openapi import (
+    Exposed,
+    ResolvedExposure,
+    build_query_examples,
+    build_query_schema,
+    describe_query,
+    resolve_exposure,
 )
 from querymate.core.query_builder import JoinType, QueryBuilder
 from querymate.core.scope import BoundScopes
@@ -124,6 +133,20 @@ class Querymate(BaseModel):
         alias=settings.JOIN_TYPE_PARAM_NAME,
     )
 
+    # Set by for_model(): the model this query targets and the surface it may use.
+    _bound_model: type[SQLModel] | None = PrivateAttr(default=None)
+    _exposure: ResolvedExposure | None = PrivateAttr(default=None)
+
+    def _resolve_model(self, model: type[T] | None) -> type[T]:
+        """Return the model to query, falling back to the one bound by for_model()."""
+        resolved = model if model is not None else self._bound_model
+        if resolved is None:
+            raise TypeError(
+                "No model given. Pass one explicitly, or build the dependency with "
+                "Querymate.for_model(Model) so it is bound."
+            )
+        return cast(type[T], resolved)
+
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
         """Convert native FastAPI QueryParams to a QueryMate instance.
@@ -174,6 +197,78 @@ class Querymate(BaseModel):
             raise InvalidQueryError(
                 "Invalid JSON in query parameter", parameter=settings.QUERY_PARAM_NAME
             ) from e
+
+    @classmethod
+    def for_model(
+        cls,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+    ) -> Callable[..., "Querymate"]:
+        """Build a FastAPI dependency that documents and enforces queries for a model.
+
+        Unlike :meth:`fastapi_dependency`, which takes the whole ``Request`` and so
+        leaves FastAPI nothing to document, this declares ``q`` as a typed parameter
+        carrying a JSON Schema built from the model. The endpoint then shows up in
+        Swagger with the fields it accepts, the operators valid for each one, and
+        runnable examples.
+
+        The same declaration is enforced: a query naming something outside ``exposed``
+        is rejected, so the documented surface and the real one cannot drift apart.
+
+        Because OpenAPI is generated once at startup while authorization is per
+        request, ``exposed`` describes what the endpoint may reveal to *someone*.
+        Narrowing it for a particular principal is the job of a scope
+        (see :mod:`querymate.core.scope`).
+
+        Args:
+            model: The model this endpoint queries.
+            exposed: The maximum surface offered. Defaults to the whole model, expanded
+                to ``max_depth``.
+            max_depth: How deep relationships may be expanded.
+
+        Returns:
+            A dependency returning a Querymate bound to ``model``, so ``run(db)`` needs
+            no second argument.
+
+        Example:
+            ```python
+            UsersQuery = Querymate.for_model(
+                User, exposed=Exposed(fields=["id", "name"], relationships={"posts": None})
+            )
+
+            @app.get("/users")
+            def list_users(q: Querymate = Depends(UsersQuery), db=Depends(get_db)):
+                return q.run(db)
+            ```
+        """
+        schema = build_query_schema(model, exposed, max_depth)
+        description = describe_query(model, exposed, max_depth)
+        examples = build_query_examples(model, exposed, max_depth)
+
+        def dependency(
+            q: Annotated[
+                str | None,
+                Query(
+                    description=description,
+                    openapi_examples=examples,
+                    json_schema_extra={
+                        # OpenAPI 3.1 carries a schema for a string holding JSON this
+                        # way, so tooling can validate and complete the value.
+                        "contentMediaType": "application/json",
+                        "contentSchema": schema,
+                    },
+                ),
+            ] = None,
+        ) -> Querymate:
+            instance = cls._parse(q) if q else cls()
+            instance._bound_model = model
+            instance._exposure = resolve_exposure(model, exposed, max_depth)
+            return instance
+
+        dependency.__name__ = f"{model.__name__}Query"
+        return dependency
 
     @classmethod
     def fastapi_dependency(cls, request: Request) -> "Querymate":
@@ -236,7 +331,7 @@ class Querymate(BaseModel):
 
     def _make_builder(
         self,
-        model: type[T],
+        model: type[T] | None,
         scopes: BoundScopes | None,
         *,
         paginated: bool = True,
@@ -252,7 +347,9 @@ class Querymate(BaseModel):
         Returns:
             QueryBuilder: The built query builder.
         """
-        query_builder = QueryBuilder(model=model, scopes=scopes)
+        query_builder = QueryBuilder(
+            model=self._resolve_model(model), scopes=scopes, exposure=self._exposure
+        )
         query_builder.prepare_scopes(self.select)
         query_builder.build(
             select=self.select,
@@ -266,13 +363,15 @@ class Querymate(BaseModel):
 
     async def _make_builder_async(
         self,
-        model: type[T],
+        model: type[T] | None,
         scopes: BoundScopes | None,
         *,
         paginated: bool = True,
     ) -> QueryBuilder:
         """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
-        query_builder = QueryBuilder(model=model, scopes=scopes)
+        query_builder = QueryBuilder(
+            model=self._resolve_model(model), scopes=scopes, exposure=self._exposure
+        )
         await query_builder.prepare_scopes_async(self.select)
         query_builder.build(
             select=self.select,
@@ -285,7 +384,11 @@ class Querymate(BaseModel):
         return query_builder
 
     def run_raw(
-        self, db: Session, model: type[T], *, scopes: BoundScopes | None = None
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[T]:
         """Build and execute the query based on the parameters.
 
@@ -301,12 +404,12 @@ class Querymate(BaseModel):
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        return self._make_builder(model, scopes).fetch(db, model)
+        return self._make_builder(model, scopes).fetch(db)
 
     def run(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
@@ -343,13 +446,13 @@ class Querymate(BaseModel):
             ```
         """
         query_builder = self._make_builder(model, scopes)
-        data = query_builder.fetch(db, model)
+        data: list[Any] = query_builder.fetch(db)
         return query_builder.serialize(data)
 
     def run_paginated(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
@@ -363,7 +466,7 @@ class Querymate(BaseModel):
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
         query_builder = self._make_builder(model, scopes)
-        data = query_builder.fetch(db, model)
+        data: list[Any] = query_builder.fetch(db)
         serialized = query_builder.serialize(data)
         total = query_builder.count(db)
 
@@ -375,7 +478,7 @@ class Querymate(BaseModel):
     async def run_async(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
@@ -407,13 +510,13 @@ class Querymate(BaseModel):
             ```
         """
         query_builder = await self._make_builder_async(model, scopes)
-        data = await query_builder.fetch_async(db, model)
+        data: list[Any] = await query_builder.fetch_async(db)
         return query_builder.serialize(data)
 
     async def run_async_paginated(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
@@ -427,7 +530,7 @@ class Querymate(BaseModel):
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
         query_builder = await self._make_builder_async(model, scopes)
-        data = await query_builder.fetch_async(db, model)
+        data: list[Any] = await query_builder.fetch_async(db)
         serialized = query_builder.serialize(data)
         total = await query_builder.count_async(db)
 
@@ -437,7 +540,11 @@ class Querymate(BaseModel):
         )
 
     async def run_raw_async(
-        self, db: AsyncSession, model: type[T], *, scopes: BoundScopes | None = None
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
 
@@ -452,7 +559,7 @@ class Querymate(BaseModel):
             list[SQLModel]: A list of model instances matching the query parameters.
         """
         query_builder = await self._make_builder_async(model, scopes)
-        return await query_builder.fetch_async(db, model)
+        return await query_builder.fetch_async(db)
 
     # -------------------------------------------------------------------------
     # Grouped Query Methods
@@ -474,7 +581,7 @@ class Querymate(BaseModel):
     def run_grouped(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
         scopes: BoundScopes | None = None,
@@ -543,7 +650,7 @@ class Querymate(BaseModel):
             # Fetch items for this group
             items = query_builder.fetch_for_group(
                 db,
-                model,
+                query_builder.model,
                 group_config,
                 extractor,
                 group_key,
@@ -580,7 +687,7 @@ class Querymate(BaseModel):
     async def run_grouped_async(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
         scopes: BoundScopes | None = None,
@@ -648,7 +755,7 @@ class Querymate(BaseModel):
 
             items = await query_builder.fetch_for_group_async(
                 db,
-                model,
+                query_builder.model,
                 group_config,
                 extractor,
                 group_key,

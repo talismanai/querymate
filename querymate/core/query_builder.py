@@ -23,6 +23,7 @@ from querymate.types import FieldSelection, NormalizedSelection
 
 if TYPE_CHECKING:
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
+    from querymate.core.openapi import ResolvedExposure
 
 T = TypeVar("T", bound=SQLModel)
 
@@ -92,7 +93,12 @@ class QueryBuilder:
     limit: int | None = settings.DEFAULT_LIMIT
     offset: int | None = settings.DEFAULT_OFFSET
 
-    def __init__(self, model: type[T], scopes: BoundScopes | None = None) -> None:
+    def __init__(
+        self,
+        model: type[T],
+        scopes: BoundScopes | None = None,
+        exposure: "ResolvedExposure | None" = None,
+    ) -> None:
         """Initialize the QueryBuilder.
 
         Args:
@@ -101,9 +107,13 @@ class QueryBuilder:
                 principal. When provided, the condition registered for each model the
                 query loads is injected into the query. See
                 :mod:`querymate.core.scope`.
+            exposure (ResolvedExposure | None): The surface the endpoint offers, as
+                declared to ``Querymate.for_model``. Enforced here so the documented
+                surface and the queryable one cannot drift apart.
         """
         self.model = model
         self.scopes = scopes
+        self.exposure = exposure
         self.query = select(model)
         self.select = []
         self.filter = {}
@@ -223,6 +233,53 @@ class QueryBuilder:
         total_nodes, _ = measure(fields, 1)
         if total_nodes > settings.MAX_SELECT_NODES:
             raise SelectionTooLargeError(total_nodes, settings.MAX_SELECT_NODES)
+
+    def _enforce_exposure(
+        self,
+        fields: Sequence[NormalizedSelection],
+        exposure: "ResolvedExposure | None",
+    ) -> None:
+        """Reject a selection reaching outside the endpoint's declared surface."""
+        if exposure is None:
+            return
+        for field in fields:
+            if isinstance(field, str):
+                exposure.check_field(field, usage="selected")
+            elif isinstance(field, dict):
+                for relationship_name, nested in field.items():
+                    child = exposure.check_relationship(relationship_name)
+                    self._enforce_exposure(nested, child)
+
+    def _enforce_filter_exposure(
+        self, filter_dict: dict[str, Any], exposure: "ResolvedExposure | None"
+    ) -> None:
+        """Reject a filter naming a field the endpoint does not expose."""
+        if exposure is None:
+            return
+        for key, condition in filter_dict.items():
+            if key in ("and", "or"):
+                for nested in condition:
+                    self._enforce_filter_exposure(nested, exposure)
+                continue
+            head, _, remainder = key.partition(".")
+            if remainder:
+                child = exposure.check_relationship(head)
+                self._enforce_filter_exposure({remainder: condition}, child)
+            else:
+                exposure.check_field(head, usage="filtered")
+
+    def _enforce_sort_exposure(
+        self, field_path: str, exposure: "ResolvedExposure | None"
+    ) -> None:
+        """Reject a sort naming a field the endpoint does not expose."""
+        if exposure is None:
+            return
+        head, _, remainder = field_path.partition(".")
+        if remainder:
+            child = exposure.check_relationship(head)
+            self._enforce_sort_exposure(remainder, child)
+        else:
+            exposure.check_field(head, usage="sorted")
 
     def _normalize_select_fields(
         self,
@@ -499,6 +556,7 @@ class QueryBuilder:
             fields = list(self.model.model_fields.keys())
         normalized_fields = self._normalize_select_fields(self.model, fields)
         self._enforce_selection_bounds(normalized_fields)
+        self._enforce_exposure(normalized_fields, self.exposure)
         self.select = normalized_fields
 
         self.query = (
@@ -544,6 +602,7 @@ class QueryBuilder:
         """
         if not filter_dict:
             return self
+        self._enforce_filter_exposure(filter_dict, self.exposure)
         self.filter = filter_dict
         filter_builder = FilterBuilder(self.model)
         filters = filter_builder.build(filter_dict)
@@ -570,6 +629,8 @@ class QueryBuilder:
         Raises:
             AttributeError: If any segment of the path cannot be resolved.
         """
+        self._enforce_sort_exposure(field_path, self.exposure)
+
         parts = field_path.split(".")
         if len(parts) == 1:
             return getattr(self.model, parts[0])
@@ -827,7 +888,7 @@ class QueryBuilder:
         """
         return [self._serialize_object(obj, self.select) for obj in objects]
 
-    def fetch(self, db: Session, model: type[T]) -> list[T]:
+    def fetch(self, db: Session, model: type[T] | None = None) -> list[T]:
         """Execute the query and return the results.
 
         This method executes the query and returns the raw model instances.
@@ -836,7 +897,8 @@ class QueryBuilder:
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[T]): The SQLModel model class to query.
+            model (type[T] | None): Accepted for backwards compatibility and ignored;
+                the builder already knows its model.
 
         Returns:
             list[T]: A list of model instances matching the query parameters.
@@ -845,7 +907,7 @@ class QueryBuilder:
             ```python
             query_builder = QueryBuilder(model=User)
             query_builder.apply_select(["id", "name"])
-            results = query_builder.fetch(db, User)
+            results = query_builder.fetch(db)
             # For serialized results:
             serialized = query_builder.serialize(results)
             ```
@@ -907,7 +969,9 @@ class QueryBuilder:
         # broken connection - into a silent zero.
         return int(db.exec(count_query).one())
 
-    async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+    async def fetch_async(
+        self, db: AsyncSession, model: type[T] | None = None
+    ) -> list[T]:
         """Execute the query asynchronously and return the results.
 
         This method executes the query asynchronously and returns the raw model instances.

@@ -35,6 +35,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 📦 Serialization              | Built-in serialization with support for relationships                      |
 | 📁 Grouping                   | Group results by field with date granularity and timezone support          |
 | 🔐 Authorization Scopes       | Apply your app's access rules to every model a query loads                 |
+| 📖 OpenAPI Schema             | Document `q` per model: fields, operators by type, runnable examples       |
 
 ---
 
@@ -174,6 +175,34 @@ async def get_users(
     # Results will be serialized according to the fields
     return await query.run_async(db, User)
 ```
+
+### OpenAPI Documentation
+
+`Depends(QueryMate.fastapi_dependency)` leaves the endpoint with **no query parameters
+in Swagger** — the dependency takes the whole `Request`, so FastAPI has nothing typed to
+document. `for_model` declares `q` properly and generates a schema from your model:
+
+```python
+from querymate import Querymate, Exposed
+
+UsersQuery = Querymate.for_model(
+    User,
+    exposed=Exposed(fields=["id", "name"], relationships={"posts": None}),
+)
+
+@app.get("/users")
+def list_users(q: Querymate = Depends(UsersQuery), db: Session = Depends(get_db)):
+    return q.run(db)          # for_model binds the model
+```
+
+The endpoint now documents its selectable, filterable and sortable fields, the operators
+valid for each one (`i_cont` on strings, `gt` on numbers and dates, `true` on booleans),
+and examples built from your own field names. `exposed` is enforced, not just
+documented — a query naming anything outside it is rejected with a 4xx, so the docs
+cannot drift from reality. Omit it to expose the whole model.
+
+Since OpenAPI is static and authorization is per-request, the schema describes what the
+endpoint may expose to *someone*; scopes decide what each principal actually sees.
 
 ### Authorization Scopes
 

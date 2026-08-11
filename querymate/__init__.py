@@ -79,6 +79,8 @@ from .core.grouping import GroupByConfig as GroupByConfig
 from .core.grouping import GroupedResponse as GroupedResponse
 from .core.grouping import GroupKeyExtractor as GroupKeyExtractor
 from .core.grouping import GroupResult as GroupResult
+from .core.openapi import Exposed as Exposed
+from .core.openapi import build_query_schema as build_query_schema
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
