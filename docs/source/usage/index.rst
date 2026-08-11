@@ -12,6 +12,7 @@ This guide covers the main features and usage patterns of QueryMate.
    grouping
    field_selection
    relationships
+   authorization
    serialization
    predicates
 

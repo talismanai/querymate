@@ -12,6 +12,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from querymate.core.config import settings
 from querymate.core.filter import FilterBuilder
+from querymate.core.scope import BoundScopes
 
 if TYPE_CHECKING:
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
@@ -79,17 +80,99 @@ class QueryBuilder:
     limit: int | None = settings.DEFAULT_LIMIT
     offset: int | None = settings.DEFAULT_OFFSET
 
-    def __init__(self, model: type[T]) -> None:
+    def __init__(self, model: type[T], scopes: BoundScopes | None = None) -> None:
         """Initialize the QueryBuilder.
 
         Args:
             model (type[T]): The SQLModel model class to query.
+            scopes (BoundScopes | None): Authorization scopes bound to the current
+                principal. When provided, the condition registered for each model the
+                query loads is injected into the query. See
+                :mod:`querymate.core.scope`.
         """
         self.model = model
+        self.scopes = scopes
         self.query = select(model)
         self.select = []
         self.filter = {}
         self.sort = []
+
+    def _models_in_select(
+        self, model: type[SQLModel], fields: Sequence[FieldSelection]
+    ) -> list[type[SQLModel]]:
+        """List every model a normalized selection will load, root first.
+
+        Scope resolvers may be async, but query building is synchronous, so callers
+        resolve conditions for this set up front (see ``prepare_scopes*``) and the build
+        then reads them from the bound registry's cache.
+
+        Args:
+            model (type[SQLModel]): The model the selection is rooted at.
+            fields (Sequence[FieldSelection]): Normalized field selections.
+
+        Returns:
+            list[type[SQLModel]]: The models involved, without duplicates.
+        """
+        models: list[type[SQLModel]] = [model]
+        inspection: Mapper = inspect(model)
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            for relationship_name, relationship_fields in field.items():
+                relationship_property = inspection.relationships.get(relationship_name)
+                if relationship_property is None:
+                    continue
+                related_model: type[SQLModel] = relationship_property.mapper.class_
+                for nested in self._models_in_select(
+                    related_model, relationship_fields
+                ):
+                    if nested not in models:
+                        models.append(nested)
+        return models
+
+    def _planned_models(
+        self, fields: list[str | dict[str, list[str]]] | None
+    ) -> list[type[SQLModel]]:
+        """Resolve which models a ``select`` argument will end up loading."""
+        effective = fields if fields else list(self.model.model_fields.keys())
+        normalized = self._normalize_select_fields(self.model, effective)
+        return self._models_in_select(self.model, normalized)
+
+    def prepare_scopes(
+        self, fields: list[str | dict[str, list[str]]] | None = None
+    ) -> "QueryBuilder":
+        """Resolve scope conditions for every model this query will load.
+
+        Runs each resolver at most once and memoizes the result on the bound registry,
+        so a model appearing at several points of the hierarchy costs a single call.
+
+        Args:
+            fields: The ``select`` argument the query will be built with.
+
+        Returns:
+            QueryBuilder: The query builder instance for method chaining.
+        """
+        if self.scopes is None:
+            return self
+        for model in self._planned_models(fields):
+            self.scopes.condition_for(model)
+        return self
+
+    async def prepare_scopes_async(
+        self, fields: list[str | dict[str, list[str]]] | None = None
+    ) -> "QueryBuilder":
+        """Async counterpart of :meth:`prepare_scopes`, awaiting async resolvers."""
+        if self.scopes is None:
+            return self
+        for model in self._planned_models(fields):
+            await self.scopes.condition_for_async(model)
+        return self
+
+    def _scope_for(self, model: type[SQLModel]) -> Any | None:
+        """Return the cached scope condition for ``model``, if scopes are bound."""
+        if self.scopes is None:
+            return None
+        return self.scopes.condition_for(model)
 
     def _normalize_select_fields(
         self, model: type[SQLModel], fields: Sequence[FieldSelection]
@@ -213,7 +296,17 @@ class QueryBuilder:
                 nested = self._select(relationship_model, relationship_fields)
                 select_columns.extend(nested[0])
                 joins.extend(nested[1])
-                joins.append(getattr(model, relationship_property.key))
+
+                relationship_attr = getattr(model, relationship_property.key)
+                scope_condition = self._scope_for(relationship_model)
+                if scope_condition is not None:
+                    # The condition must live in the join's ON clause, not in WHERE:
+                    # filtering an outer-joined table in WHERE silently degenerates the
+                    # LEFT JOIN into an INNER JOIN, which would drop parents whose
+                    # children are all invisible instead of returning them with an
+                    # empty list.
+                    relationship_attr = relationship_attr.and_(scope_condition)
+                joins.append(relationship_attr)
 
         return select_columns, joins
 
@@ -287,6 +380,11 @@ class QueryBuilder:
                 self.query = self.query.outerjoin(join)
             else:
                 self.query = self.query.join(join)
+
+        # The root model is not reached through a join, so its scope is a plain WHERE.
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            self.query = self.query.where(root_scope)
         return self
 
     def apply_filter(self, filter_dict: dict[str, Any] | None = None) -> "QueryBuilder":
@@ -682,6 +780,12 @@ class QueryBuilder:
             if filters:
                 count_query = count_query.where(*filters)
 
+        # Without this the reported total would leak the existence of rows the
+        # principal is not allowed to see.
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            count_query = count_query.where(root_scope)
+
         # For sync sessions, exec() returns ScalarResult; use one()/first()
         result_obj = db.exec(count_query)
         try:
@@ -814,6 +918,10 @@ class QueryBuilder:
             if filters:
                 count_query = count_query.where(*filters)
 
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            count_query = count_query.where(root_scope)
+
         results = await db.execute(count_query)
         # Prefer scalar_one if available; otherwise fall back to scalar/first
         try:
@@ -882,6 +990,10 @@ class QueryBuilder:
             if filters:
                 keys_query = keys_query.where(*filters)
 
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            keys_query = keys_query.where(root_scope)
+
         # Order naturally (alphabetically for strings, chronologically for dates)
         keys_query = keys_query.order_by(group_expr)
 
@@ -920,6 +1032,10 @@ class QueryBuilder:
             if filters:
                 keys_query = keys_query.where(*filters)
 
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            keys_query = keys_query.where(root_scope)
+
         keys_query = keys_query.order_by(group_expr)
 
         results = await db.execute(keys_query)
@@ -955,8 +1071,12 @@ class QueryBuilder:
         group_expr = extractor.get_group_key_expression(column, group_config)
 
         # Build a fresh query for this group
-        group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
+        # Reuses the same BoundScopes, so its resolver cache is shared and no group
+        # costs an extra resolver call.
+        group_builder = QueryBuilder(model, scopes=self.scopes)
+        group_builder.apply_select(
+            self.select if self.select else None, join_type=join_type
+        )
 
         # Combine existing filters with group filter
         combined_filter = dict(self.filter) if self.filter else {}
@@ -1005,8 +1125,12 @@ class QueryBuilder:
         column = self._resolve_column(group_config.field)
         group_expr = extractor.get_group_key_expression(column, group_config)
 
-        group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
+        # Reuses the same BoundScopes, so its resolver cache is shared and no group
+        # costs an extra resolver call.
+        group_builder = QueryBuilder(model, scopes=self.scopes)
+        group_builder.apply_select(
+            self.select if self.select else None, join_type=join_type
+        )
 
         combined_filter = dict(self.filter) if self.filter else {}
         group_builder.apply_filter(combined_filter)
@@ -1052,6 +1176,10 @@ class QueryBuilder:
             if filters:
                 count_query = count_query.where(*filters)
 
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            count_query = count_query.where(root_scope)
+
         count_query = count_query.where(group_expr == group_key)
 
         result = db.exec(count_query)
@@ -1091,6 +1219,10 @@ class QueryBuilder:
             filters = FilterBuilder(self.model).build(self.filter)
             if filters:
                 count_query = count_query.where(*filters)
+
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            count_query = count_query.where(root_scope)
 
         count_query = count_query.where(group_expr == group_key)
 

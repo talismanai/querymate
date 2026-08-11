@@ -68,6 +68,11 @@ from .core.grouping import GroupResult as GroupResult
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
+from .core.scope import BoundScopes as BoundScopes
+from .core.scope import ScopeCache as ScopeCache
+from .core.scope import ScopeContext as ScopeContext
+from .core.scope import ScopeRegistry as ScopeRegistry
+from .core.scope import UnscopedModelError as UnscopedModelError
 from .types import PaginatedResponse as PaginatedResponse
 from .types import PaginationInfo as PaginationInfo
 from .types import QuerymatePaginatedResponse as QuerymatePaginatedResponse

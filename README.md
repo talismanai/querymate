@@ -34,6 +34,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | ⚡ Async Support              | Full support for async database operations                                 |
 | 📦 Serialization              | Built-in serialization with support for relationships                      |
 | 📁 Grouping                   | Group results by field with date granularity and timezone support          |
+| 🔐 Authorization Scopes       | Apply your app's access rules to every model a query loads                 |
 
 ---
 
@@ -173,6 +174,46 @@ async def get_users(
     # Results will be serialized according to the fields
     return await query.run_async(db, User)
 ```
+
+### Authorization Scopes
+
+QueryMate does not implement authorization — it applies the authorization your app
+already has. Declare, per model, the condition under which the current principal may
+see its rows, and QueryMate injects it into every query that loads that model,
+including nested relationships.
+
+Access usually has to be looked up ("is the user on a team that has access?"), so a
+scope is a resolver receiving the principal and a live session:
+
+```python
+from querymate import ScopeRegistry
+
+scopes = ScopeRegistry()
+
+@scopes.register(Post)
+def post_scope(ctx):
+    return Post.team_id.in_(
+        select(TeamMember.team_id).where(TeamMember.user_id == ctx.principal.id)
+    )
+
+@app.get("/users")
+def list_users(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: Session = Depends(get_db),
+    me = Depends(get_current_user),
+):
+    return query.run(db, User, scopes=scopes.bind(principal=me, db=db))
+```
+
+Each resolver runs at most once per model per request — never once per row — and
+`ctx.cache` lets several models share one expensive lookup. Counts respect scopes, so
+`total` never leaks the existence of invisible rows. Querying a model with no
+registered scope raises `UnscopedModelError`; mark genuinely public data with
+`scopes.allow_all(Model)`, or bind with `strict=False` to adopt scopes gradually.
+Omitting `scopes=` leaves behaviour unchanged.
+
+See [the authorization guide](docs/source/usage/authorization.rst) for async
+resolvers and the current limits.
 
 ### Logical Filters (AND/OR)
 

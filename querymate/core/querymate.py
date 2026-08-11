@@ -16,6 +16,7 @@ from querymate.core.grouping import (
     GroupResult,
 )
 from querymate.core.query_builder import JoinType, QueryBuilder
+from querymate.core.scope import BoundScopes
 from querymate.types import PaginatedResponse, PaginationInfo
 
 T = TypeVar("T", bound=SQLModel)
@@ -214,7 +215,59 @@ class Querymate(BaseModel):
             next_page=next_page,
         )
 
-    def run_raw(self, db: Session, model: type[T]) -> list[T]:
+    def _make_builder(
+        self,
+        model: type[T],
+        scopes: BoundScopes | None,
+        *,
+        paginated: bool = True,
+    ) -> QueryBuilder:
+        """Create a QueryBuilder, resolve authorization scopes, and build the query.
+
+        Args:
+            model (type[T]): The SQLModel model class to query.
+            scopes (BoundScopes | None): Scopes bound to the current principal.
+            paginated (bool): Whether to apply limit/offset. Grouped queries paginate
+                per group instead, so they pass False.
+
+        Returns:
+            QueryBuilder: The built query builder.
+        """
+        query_builder = QueryBuilder(model=model, scopes=scopes)
+        query_builder.prepare_scopes(self.select)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self.limit if paginated else None,
+            offset=self.offset if paginated else None,
+            join_type=self.join_type,
+        )
+        return query_builder
+
+    async def _make_builder_async(
+        self,
+        model: type[T],
+        scopes: BoundScopes | None,
+        *,
+        paginated: bool = True,
+    ) -> QueryBuilder:
+        """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
+        query_builder = QueryBuilder(model=model, scopes=scopes)
+        await query_builder.prepare_scopes_async(self.select)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self.limit if paginated else None,
+            offset=self.offset if paginated else None,
+            join_type=self.join_type,
+        )
+        return query_builder
+
+    def run_raw(
+        self, db: Session, model: type[T], *, scopes: BoundScopes | None = None
+    ) -> list[T]:
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -223,25 +276,20 @@ class Querymate(BaseModel):
         Args:
             db (Session): The SQLModel database session.
             model (type[SQLModel]): The SQLModel model class to query.
+            scopes (BoundScopes | None): Authorization scopes bound to the current
+                principal, as returned by ``ScopeRegistry.bind(...)``.
 
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        return query_builder.fetch(db, model)
+        return self._make_builder(model, scopes).fetch(db, model)
 
     def run(
         self,
         db: Session,
         model: type[T],
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
         """Build and execute the query based on the parameters.
 
@@ -268,17 +316,14 @@ class Querymate(BaseModel):
                 join_type="left"
             )
             results = querymate.run(db, User)
+
+            # Restricted to what the current principal may see
+            results = querymate.run(
+                db, User, scopes=scopes.bind(principal=me, db=db)
+            )
             ```
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
+        query_builder = self._make_builder(model, scopes)
         data = query_builder.fetch(db, model)
         return query_builder.serialize(data)
 
@@ -286,6 +331,8 @@ class Querymate(BaseModel):
         self,
         db: Session,
         model: type[T],
+        *,
+        scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
         """Build and execute the query with pagination metadata.
 
@@ -296,15 +343,7 @@ class Querymate(BaseModel):
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
+        query_builder = self._make_builder(model, scopes)
         data = query_builder.fetch(db, model)
         serialized = query_builder.serialize(data)
         total = query_builder.count(db)
@@ -318,6 +357,8 @@ class Querymate(BaseModel):
         self,
         db: AsyncSession,
         model: type[T],
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
         """Build and execute the query asynchronously based on the parameters.
 
@@ -346,15 +387,7 @@ class Querymate(BaseModel):
             results = await querymate.run_async(db, User)
             ```
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
+        query_builder = await self._make_builder_async(model, scopes)
         data = await query_builder.fetch_async(db, model)
         return query_builder.serialize(data)
 
@@ -362,6 +395,8 @@ class Querymate(BaseModel):
         self,
         db: AsyncSession,
         model: type[T],
+        *,
+        scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
         """Build and execute the query asynchronously with pagination metadata.
 
@@ -372,15 +407,7 @@ class Querymate(BaseModel):
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
+        query_builder = await self._make_builder_async(model, scopes)
         data = await query_builder.fetch_async(db, model)
         serialized = query_builder.serialize(data)
         total = await query_builder.count_async(db)
@@ -390,7 +417,9 @@ class Querymate(BaseModel):
             pagination=self._pagination(total),
         )
 
-    async def run_raw_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+    async def run_raw_async(
+        self, db: AsyncSession, model: type[T], *, scopes: BoundScopes | None = None
+    ) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -403,15 +432,7 @@ class Querymate(BaseModel):
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
+        query_builder = await self._make_builder_async(model, scopes)
         return await query_builder.fetch_async(db, model)
 
     # -------------------------------------------------------------------------
@@ -437,6 +458,7 @@ class Querymate(BaseModel):
         model: type[T],
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
+        scopes: BoundScopes | None = None,
     ) -> dict[str, Any]:
         """Build and execute a grouped query based on the parameters.
 
@@ -475,13 +497,7 @@ class Querymate(BaseModel):
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            join_type=self.join_type,
-        )
+        query_builder = self._make_builder(model, scopes, paginated=False)
 
         # Get all distinct group keys with their counts
         group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
@@ -548,6 +564,7 @@ class Querymate(BaseModel):
         model: type[T],
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
+        scopes: BoundScopes | None = None,
     ) -> dict[str, Any]:
         """Build and execute a grouped query asynchronously.
 
@@ -586,13 +603,7 @@ class Querymate(BaseModel):
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            join_type=self.join_type,
-        )
+        query_builder = await self._make_builder_async(model, scopes, paginated=False)
 
         group_keys = await query_builder.get_distinct_group_keys_async(
             db, group_config, extractor
