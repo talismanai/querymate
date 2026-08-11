@@ -560,9 +560,8 @@ class QueryBuilder:
         self.select = normalized_fields
 
         self.query = (
-            select(self.model).options(
-                *self._loader_options(self.model, normalized_fields)
-            )
+            select(self.model)
+            .options(*self._loader_options(self.model, normalized_fields))
             # Without this, an entity already in the session's identity map keeps the
             # relationship contents it was first loaded with. Two queries differing
             # only in their scope would then serve the first principal's children for

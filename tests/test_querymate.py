@@ -1,5 +1,7 @@
+import json
 from collections.abc import AsyncGenerator, Callable, Generator
 from typing import Any
+from urllib.parse import unquote, unquote_plus
 
 import pytest
 from fastapi import FastAPI, Request
@@ -82,10 +84,20 @@ def test_to_qs() -> None:
     )
     qs = querymate.to_qs()
 
-    assert (
-        qs
-        == "q=%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%2C%22join_type%22%3Anull%7D"
-    )
+    # Compare the decoded payload rather than the percent-encoded blob: the encoded
+    # form pins key order and every default, so it broke on any field change while
+    # saying nothing about whether the round trip works.
+    assert qs.startswith("q=")
+    assert json.loads(unquote_plus(qs[len("q=") :])) == {
+        "select": ["id", "name"],
+        "filter": {"age": {"gt": 25}},
+        "sort": ["-age"],
+        "limit": 10,
+        "offset": 0,
+        "group_by": None,
+        "join_type": None,
+    }
+    assert Querymate.from_qs(QueryParams(qs)) == querymate
 
 
 def test_to_query_param() -> None:
@@ -97,10 +109,17 @@ def test_to_query_param() -> None:
         offset=0,
     )
     qp = querymate.to_query_param()
-    assert (
-        qp
-        == "%7B%22select%22%3A%5B%22id%22%2C%22name%22%5D%2C%22filter%22%3A%7B%22age%22%3A%7B%22gt%22%3A25%7D%7D%2C%22sort%22%3A%5B%22-age%22%5D%2C%22limit%22%3A10%2C%22offset%22%3A0%2C%22include_pagination%22%3Afalse%2C%22group_by%22%3Anull%2C%22join_type%22%3Anull%7D"
-    )
+
+    assert json.loads(unquote(qp)) == {
+        "select": ["id", "name"],
+        "filter": {"age": {"gt": 25}},
+        "sort": ["-age"],
+        "limit": 10,
+        "offset": 0,
+        "group_by": None,
+        "join_type": None,
+    }
+    assert Querymate.from_query_param(qp) == querymate
 
 
 def test_from_qs() -> None:

@@ -97,9 +97,15 @@ def get_users(
     db: Session = Depends(get_db)
 ):
     # Returns serialized results as a list
-    if query.include_pagination:
-        return query.run_paginated(db, User)
     return query.run(db, User)
+
+@app.get("/users/paginated")
+def get_users_paginated(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: Session = Depends(get_db)
+):
+    # Returns items plus pagination metadata
+    return query.run_paginated(db, User)
 
 @app.get("/users/raw")
 def get_users_raw(
@@ -147,9 +153,15 @@ async def get_users(
     db: AsyncSession = Depends(get_db)
 ):
     # Returns serialized results
-    if query.include_pagination:
-        return await query.run_async_paginated(db, User)
     return await query.run_async(db, User)
+
+@app.get("/users/paginated")
+async def get_users_paginated(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: AsyncSession = Depends(get_db)
+):
+    # Returns items plus pagination metadata
+    return await query.run_async_paginated(db, User)
 
 @app.get("/users/raw")
 async def get_users_raw(

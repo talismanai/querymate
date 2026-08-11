@@ -117,11 +117,6 @@ class Querymate(BaseModel):
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
     )
-    include_pagination: bool = Field(  # type: ignore[literal-required]
-        default=settings.DEFAULT_RETURN_PAGINATION,
-        description="Include pagination metadata in response",
-        alias=settings.PAGINATION_PARAM_NAME,
-    )
     group_by: GroupByParam | None = Field(  # type: ignore[literal-required]
         default=None,
         description="Group results by field. Can be a string or dict with field, granularity, tz_offset/timezone",
