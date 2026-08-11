@@ -141,7 +141,8 @@ class QueryMateSettings(BaseSettings):
 
     # Join type configuration
     JOIN_TYPE_PARAM_NAME: str = Field(
-        default="join_type", description="Join type parameter name for relationship queries"
+        default="join_type",
+        description="Join type parameter name for relationship queries",
     )
     DEFAULT_JOIN_TYPE: str = Field(
         default="inner",

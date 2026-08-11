@@ -13,6 +13,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from querymate.core.config import settings
 from querymate.core.filter import FilterBuilder
 from querymate.core.scope import BoundScopes
+from querymate.types import FieldSelection
 
 if TYPE_CHECKING:
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
@@ -20,7 +21,6 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=SQLModel)
 
 # Type aliases for better readability
-FieldSelection = str | dict[str, list[str]]
 SelectResult = tuple[list[InstrumentedAttribute], list[Join]]
 JoinType = Literal["inner", "left", "outer"]
 
@@ -131,7 +131,7 @@ class QueryBuilder:
         return models
 
     def _planned_models(
-        self, fields: list[str | dict[str, list[str]]] | None
+        self, fields: list[FieldSelection] | None
     ) -> list[type[SQLModel]]:
         """Resolve which models a ``select`` argument will end up loading."""
         effective = fields if fields else list(self.model.model_fields.keys())
@@ -139,7 +139,7 @@ class QueryBuilder:
         return self._models_in_select(self.model, normalized)
 
     def prepare_scopes(
-        self, fields: list[str | dict[str, list[str]]] | None = None
+        self, fields: list[FieldSelection] | None = None
     ) -> "QueryBuilder":
         """Resolve scope conditions for every model this query will load.
 
@@ -159,7 +159,7 @@ class QueryBuilder:
         return self
 
     async def prepare_scopes_async(
-        self, fields: list[str | dict[str, list[str]]] | None = None
+        self, fields: list[FieldSelection] | None = None
     ) -> "QueryBuilder":
         """Async counterpart of :meth:`prepare_scopes`, awaiting async resolvers."""
         if self.scopes is None:
@@ -334,7 +334,7 @@ class QueryBuilder:
 
     def apply_select(
         self,
-        fields: list[str | dict[str, list[str]]] | None = None,
+        fields: list[FieldSelection] | None = None,
         join_type: JoinType | None = None,
     ) -> "QueryBuilder":
         """
@@ -344,7 +344,7 @@ class QueryBuilder:
         through nested dictionaries.
 
         Args:
-            fields (list[str | dict[str, list[str]]] | None): List of fields to select.
+            fields (list[FieldSelection] | None): List of fields to select.
                 Can include nested dictionaries for relationship fields.
                 If None, all fields are selected.
             join_type (JoinType | None): Type of join to use for relationships.
@@ -566,7 +566,7 @@ class QueryBuilder:
 
     def build(
         self,
-        select: list[str | dict[str, list[str]]] | None = None,
+        select: list[FieldSelection] | None = None,
         filter: dict[str, Any] | None = None,
         sort: list[str | dict[str, Any]] | None = None,
         limit: int | None = None,
@@ -579,7 +579,7 @@ class QueryBuilder:
         into a single method call.
 
         Args:
-            select (list[str | dict[str, list[str]]] | None): Fields to select.
+            select (list[FieldSelection] | None): Fields to select.
             filter (dict[str, Any] | None): Filter conditions.
             sort (list[str] | None): Sort parameters.
             limit (int | None): Maximum number of records.
@@ -831,7 +831,7 @@ class QueryBuilder:
                     # Recursively reconstruct related object(s)
                     related_obj, field_idx = self.reconstruct_object(
                         related_model,
-                        relation_fields,  # type: ignore
+                        relation_fields,
                         row,
                         field_idx,
                     )

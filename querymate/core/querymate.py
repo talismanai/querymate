@@ -17,14 +17,13 @@ from querymate.core.grouping import (
 )
 from querymate.core.query_builder import JoinType, QueryBuilder
 from querymate.core.scope import BoundScopes
-from querymate.types import PaginatedResponse, PaginationInfo
+from querymate.types import FieldSelection, PaginatedResponse, PaginationInfo
 
 T = TypeVar("T", bound=SQLModel)
 R = TypeVar("R")
 
 
 # Type aliases for better readability
-FieldSelection = str | dict[str, list[str]]
 FilterCondition = dict[str, Any]
 GroupByParam = str | dict[str, Any]
 

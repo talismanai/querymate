@@ -3,8 +3,20 @@
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
+from typing_extensions import TypeAliasType
 
 T = TypeVar("T")
+
+# A selected field is either a column name or a relationship mapped to its own
+# selection. The alias is recursive because a relationship's selection may itself
+# contain relationships - the non-recursive `dict[str, list[str]]` this replaced
+# contradicted the documented support for nested selections.
+#
+# TypeAliasType (rather than a plain alias with a forward reference) is what lets
+# Pydantic build a schema for a recursive type instead of recursing forever.
+FieldSelection = TypeAliasType(
+    "FieldSelection", "str | dict[str, list[FieldSelection]]"
+)
 
 
 class PaginationInfo(BaseModel):
