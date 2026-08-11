@@ -3,9 +3,10 @@ from datetime import UTC, date, datetime
 from typing import Any, ClassVar, TypeVar
 
 from sqlalchemy import and_, or_
+from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.type_api import TypeEngine
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, inspect
 
 from querymate.core.config import settings
 
@@ -703,8 +704,42 @@ class FilterBuilder:
         """
         return self._parse(self.model, filters_dict)
 
+    def _leaf_condition(self, column: InstrumentedAttribute, condition: Any) -> Any:
+        """Build the condition for a single column.
+
+        A field may carry several operators (``{"cont": "a", "starts_with": "b"}``);
+        they are combined with AND so that one row has to satisfy all of them.
+
+        Raises:
+            ValueError: If an unsupported operator is used.
+        """
+        if not isinstance(condition, dict):
+            # Default to equality if no operator is specified
+            return column == self._cast_value(column, "eq", condition)
+
+        expressions: list[Any] = []
+        for operator, value in condition.items():
+            if operator not in settings.FILTER_OPERATORS:
+                raise ValueError(f"Unsupported operator: {operator}")
+            casted_value = self._cast_value(column, operator, value)
+            expressions.append(
+                Predicate.registry[operator]().apply(column, casted_value)
+            )
+
+        if len(expressions) == 1:
+            return expressions[0]
+        return and_(*expressions)
+
     def _parse(self, model: type[SQLModel], filters_dict: dict) -> list[Any]:
         """Parse a filter dictionary into SQLAlchemy expressions.
+
+        Conditions on related fields become correlated EXISTS subqueries rather than
+        relying on a join. That keeps a filter working whether or not the relationship
+        is also selected, makes it usable in COUNT, and avoids multiplying rows.
+
+        Conditions sharing a relationship prefix are grouped into a single EXISTS, so
+        ``{"posts.title": ..., "posts.content": ...}`` asks for one post satisfying
+        both rather than two posts each satisfying one.
 
         Args:
             model (type[SQLModel]): The SQLModel class to parse filters for.
@@ -715,8 +750,12 @@ class FilterBuilder:
 
         Raises:
             ValueError: If an unsupported operator is used.
+            AttributeError: If a field or relationship cannot be resolved.
         """
         filters: list[Any] = []
+        # Conditions on the same relationship, keyed by the first hop.
+        nested: dict[str, dict[str, Any]] = {}
+
         for field, condition in filters_dict.items():
             if field == "and":
                 and_conditions = []
@@ -728,19 +767,31 @@ class FilterBuilder:
                 for cond in condition:
                     or_conditions.extend(self._parse(model, cond))
                 filters.append(or_(*or_conditions))
+            elif "." in field:
+                head, remainder = field.split(".", 1)
+                nested.setdefault(head, {})[remainder] = condition
             else:
                 column = self.resolver.resolve(model, field)
-                if isinstance(condition, dict):
-                    for operator, value in condition.items():
-                        if operator not in settings.FILTER_OPERATORS:
-                            raise ValueError(f"Unsupported operator: {operator}")
-                        # Cast the value before applying the predicate
-                        casted_value = self._cast_value(column, operator, value)
-                        predicate = Predicate.registry[operator]()
-                        filters.append(predicate.apply(column, casted_value))
-                else:
-                    # Default to equality if no operator is specified
-                    casted_value = self._cast_value(column, "eq", condition)
-                    filters.append(column == casted_value)
+                filters.append(self._leaf_condition(column, condition))
+
+        for relationship_name, sub_filters in nested.items():
+            mapper: Mapper = inspect(model)
+            relationship = mapper.relationships.get(relationship_name)
+            if relationship is None:
+                raise AttributeError(
+                    f"Field {relationship_name} not found in {model.__name__}"
+                )
+            related_model: type[SQLModel] = relationship.mapper.class_
+            inner_conditions = self._parse(related_model, sub_filters)
+            inner = (
+                inner_conditions[0]
+                if len(inner_conditions) == 1
+                else and_(*inner_conditions)
+            )
+            attribute = getattr(model, relationship_name)
+            # any() for collections, has() for to-one; both compile to EXISTS.
+            filters.append(
+                attribute.any(inner) if relationship.uselist else attribute.has(inner)
+            )
 
         return filters

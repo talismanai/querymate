@@ -1,18 +1,15 @@
 """Characterization tests for relationship loading.
 
-Every test here asserts the behaviour QueryMate *should* have. The ones marked
-``xfail(strict=True)`` are the bugs the flat-JOIN engine has today; when the engine is
-replaced by native eager loading they must start passing, and strict mode turns a
-silent recovery into a visible signal.
-
-They exist so the engine rewrite is not done blind: they are the definition of done.
+These were written against the old flat-JOIN engine, where six of them were marked
+``xfail(strict=True)`` and served as the definition of done for replacing it with
+native eager loading. The rewrite turned all six green and the markers came off; they
+now guard against regressing back into any of those behaviours.
 """
 
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-import pytest
 from sqlalchemy import event
 from sqlmodel import Session
 
@@ -58,7 +55,7 @@ def _user(idx: int) -> User:
 
 
 def _seed_wide(db: Session, users: int = 5, posts_per_user: int = 3) -> None:
-    """Several users, each with several posts - enough for the join to multiply rows."""
+    """Several users, each with several posts - enough that a join would multiply rows."""
     post_id = 1
     for u in range(1, users + 1):
         db.add(_user(u))
@@ -81,11 +78,6 @@ def _seed_wide(db: Session, users: int = 5, posts_per_user: int = 3) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LIMIT is applied to joined rows, not root records, so fewer users "
-    "come back than requested whenever a relationship is selected.",
-)
 def test_limit_counts_root_records_not_joined_rows(db: Session) -> None:
     _seed_wide(db, users=5, posts_per_user=3)
 
@@ -95,11 +87,6 @@ def test_limit_counts_root_records_not_joined_rows(db: Session) -> None:
     assert len(results) == 4
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same cause: the page is cut from joined rows while the total counts "
-    "root records, so items and pagination describe different things.",
-)
 def test_pagination_total_agrees_with_page_size(db: Session) -> None:
     _seed_wide(db, users=5, posts_per_user=3)
 
@@ -112,7 +99,7 @@ def test_pagination_total_agrees_with_page_size(db: Session) -> None:
 
 
 def test_limit_is_correct_without_relationships(db: Session) -> None:
-    """The scalar-only case works today; pinning it guards against regressions."""
+    """The scalar-only case was already correct; pinned so it stays that way."""
     _seed_wide(db, users=5, posts_per_user=3)
 
     q = Querymate(select=["id", "name"], limit=4)
@@ -124,11 +111,6 @@ def test_limit_is_correct_without_relationships(db: Session) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Nested joins are appended before their parent join, producing an "
-    "invalid join order for three-level chains.",
-)
 def test_three_level_nesting(db: Session) -> None:
     db.add(_user(1))
     db.add(Post(id=1, title="Post 1", content="c", user_id=1))
@@ -171,16 +153,12 @@ def test_distinct_children_with_identical_selected_fields(db: Session) -> None:
     assert len(results[0]["posts"]) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Two to-many relationships in one flat JOIN produce a cartesian product, "
-    "and because children are merged by identity nothing removes the duplicates.",
-)
 def test_two_to_many_relationships_do_not_duplicate_children(db: Session) -> None:
     """A post with 2 comments and 2 tags must report 2 of each, not 4.
 
-    The flat join yields 2x2 rows and every row rebuilds fresh child objects, so each
-    child is appended once per row it appears in.
+    Loading both collections in one flat join produced 2x2 rows, and rebuilding child
+    objects per row appended each child once per row it appeared in. Separate
+    selectin queries have no cartesian product to de-duplicate.
     """
     db.add(_user(1))
     post = Post(id=1, title="Post 1", content="c", user_id=1)
@@ -210,8 +188,8 @@ def _seed_mixed(db: Session) -> None:
     """Three users with a published post, two with drafts only.
 
     A discriminating dataset matters here: when every user has a published post, the
-    cartesian product that count() currently produces returns the right number by
-    accident and hides the bug.
+    cartesian product the old count() produced returned the right number by accident
+    and hid the bug.
     """
     post_id = 1
     for user_id in range(1, 6):
@@ -230,11 +208,6 @@ def _seed_mixed(db: Session) -> None:
     db.commit()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="count() builds its query without any join, so a filter on a related "
-    "field turns into a cartesian product and counts every root record.",
-)
 def test_count_with_relationship_filter(db: Session) -> None:
     _seed_mixed(db)
 
@@ -248,11 +221,6 @@ def test_count_with_relationship_filter(db: Session) -> None:
     assert response.pagination.total == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Filtering on a relationship does not add a join, so the condition is "
-    "only honoured when the relationship also appears in select.",
-)
 def test_relationship_filter_without_selecting_the_relationship(db: Session) -> None:
     _seed_mixed(db)
 
@@ -309,3 +277,113 @@ def test_query_count_is_constant_regardless_of_data_volume(db: Session) -> None:
         q.run(db, User)
 
     assert len(statements) <= 2, f"expected a constant query count, got {statements}"
+
+
+# ---------------------------------------------------------------------------
+# Choosing which children to load
+# ---------------------------------------------------------------------------
+
+
+def test_relationship_filter_selects_parents_not_children(db: Session) -> None:
+    """A top-level relationship filter picks parents; it does not narrow children.
+
+    Under the flat-JOIN engine the inner join did both at once. Separating them is
+    deliberate: the two are different questions and conflating them made neither
+    expressible on its own.
+    """
+    db.add(_user(1))
+    db.add(Post(id=1, title="Published", content="c", user_id=1, status="published"))
+    db.add(Post(id=2, title="Draft", content="c", user_id=1, status="draft"))
+    db.commit()
+
+    q = Querymate(
+        select=["id", "name", {"posts": ["id", "title", "status"]}],
+        filter={"posts.status": {"eq": "published"}},
+    )
+    results = q.run(db, User)
+
+    assert len(results) == 1
+    assert {p["title"] for p in results[0]["posts"]} == {"Published", "Draft"}
+
+
+def test_select_filter_narrows_loaded_children(db: Session) -> None:
+    """A filter inside the relationship's own node restricts which children load."""
+    db.add(_user(1))
+    db.add(Post(id=1, title="Published", content="c", user_id=1, status="published"))
+    db.add(Post(id=2, title="Draft", content="c", user_id=1, status="draft"))
+    db.commit()
+
+    q = Querymate(
+        select=[
+            "id",
+            "name",
+            {
+                "posts": {
+                    "select": ["id", "title", "status"],
+                    "filter": {"status": {"eq": "published"}},
+                }
+            },
+        ]
+    )
+    results = q.run(db, User)
+
+    assert len(results) == 1
+    assert [p["title"] for p in results[0]["posts"]] == ["Published"]
+
+
+def test_select_filter_keeps_parents_without_matching_children(db: Session) -> None:
+    """Narrowing children must not remove the parent, even with the default join_type."""
+    db.add(_user(1))
+    db.add(Post(id=1, title="Draft only", content="c", user_id=1, status="draft"))
+    db.commit()
+
+    q = Querymate(
+        select=[
+            "id",
+            "name",
+            {
+                "posts": {
+                    "select": ["id", "title"],
+                    "filter": {"status": {"eq": "published"}},
+                }
+            },
+        ],
+        join_type="left",
+    )
+    results = q.run(db, User)
+
+    assert len(results) == 1
+    assert results[0]["posts"] == []
+
+
+def test_select_filter_applies_at_depth(db: Session) -> None:
+    """The same works on a nested relationship, not just a top-level one."""
+    db.add(_user(1))
+    db.add(Post(id=1, title="Post 1", content="c", user_id=1))
+    db.add(Comment(id=1, body="Approved", post_id=1, approved=True))
+    db.add(Comment(id=2, body="Pending", post_id=1, approved=False))
+    db.commit()
+
+    q = Querymate(
+        select=[
+            "id",
+            "name",
+            {
+                "posts": {
+                    "select": [
+                        "id",
+                        {
+                            "comments": {
+                                "select": ["id", "body"],
+                                "filter": {"approved": {"eq": True}},
+                            }
+                        },
+                    ]
+                }
+            },
+        ]
+    )
+    results = q.run(db, User)
+
+    comments = results[0]["posts"][0]["comments"]
+    assert [c["body"] for c in comments] == ["Approved"]

@@ -42,8 +42,10 @@ class Querymate(BaseModel):
         sort (list[str] | None): List of fields to sort by. Prefix with "-" for descending order. Default is [].
         limit (int | None): Maximum number of records to return. Default is 10, max is 200.
         offset (int | None): Number of records to skip. Default is 0.
-        join_type (JoinType | None): Type of join for relationship queries. Options: 'inner' (default),
-            'left', 'outer'. Use 'left' or 'outer' to include parent records even when no children exist.
+        join_type (JoinType | None): How selected relationships restrict the result.
+            Options: 'inner' (default), 'left', 'outer'. Use 'left' or 'outer' to include
+            parent records even when no children exist. Applied as an EXISTS restriction;
+            relationships themselves are loaded with eager loaders, not joins.
 
     Serialization:
         The Querymate class includes built-in serialization capabilities through the `run` and `run_async` methods.

@@ -2,9 +2,9 @@ from collections.abc import Sequence
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from sqlalchemy import Join, case, func
+from sqlalchemy import and_, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapper
+from sqlalchemy.orm import Mapper, joinedload, load_only, selectinload
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlmodel import Session, SQLModel, inspect, select
@@ -13,7 +13,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from querymate.core.config import settings
 from querymate.core.filter import FilterBuilder
 from querymate.core.scope import BoundScopes
-from querymate.types import FieldSelection
+from querymate.types import FieldSelection, NormalizedSelection
 
 if TYPE_CHECKING:
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=SQLModel)
 
 # Type aliases for better readability
-SelectResult = tuple[list[InstrumentedAttribute], list[Join]]
 JoinType = Literal["inner", "left", "outer"]
 
 # Configure logger
@@ -38,10 +37,17 @@ class QueryBuilder:
     It also includes built-in serialization capabilities to transform query results into
     dictionaries with only the requested fields.
 
+    Relationships are loaded with SQLAlchemy's native eager loading - ``selectinload``
+    for collections, ``joinedload`` for to-one, ``load_only`` for sparse fields - so the
+    root query keeps one row per record. That is what makes ``limit``/``offset`` count
+    root records and keeps children from being duplicated. Conditions on related fields
+    compile to correlated ``EXISTS`` rather than relying on a join, so they work whether
+    or not the relationship is selected, and inside ``count()``.
+
     Attributes:
         model (type[T]): The SQLModel model class to query.
         query (SelectOfScalar): The current SQL query being built.
-        select (list[FieldSelection]): Fields to include in the response.
+        select (list[NormalizedSelection]): Fields to include in the response.
         filter (dict[str, Any]): Filter conditions for the query.
         sort (list[str]): List of fields to sort by.
         limit (int | None): Maximum number of records to return.
@@ -74,7 +80,7 @@ class QueryBuilder:
 
     model: type[SQLModel]
     query: SelectOfScalar
-    select: list[FieldSelection]
+    select: list[NormalizedSelection]
     filter: dict[str, Any]
     sort: list[str | dict[str, Any]]
     limit: int | None = settings.DEFAULT_LIMIT
@@ -96,9 +102,14 @@ class QueryBuilder:
         self.select = []
         self.filter = {}
         self.sort = []
+        # EXISTS conditions reproducing inner-join semantics; count() reuses them so
+        # the total matches the rows actually returned.
+        self._required_conditions: list[Any] = []
+        # Per-relationship "which children to load" filters, keyed by path.
+        self._relationship_filters: dict[tuple[str, ...], dict[str, Any]] = {}
 
     def _models_in_select(
-        self, model: type[SQLModel], fields: Sequence[FieldSelection]
+        self, model: type[SQLModel], fields: Sequence[NormalizedSelection]
     ) -> list[type[SQLModel]]:
         """List every model a normalized selection will load, root first.
 
@@ -175,13 +186,24 @@ class QueryBuilder:
         return self.scopes.condition_for(model)
 
     def _normalize_select_fields(
-        self, model: type[SQLModel], fields: Sequence[FieldSelection]
-    ) -> list[FieldSelection]:
+        self,
+        model: type[SQLModel],
+        fields: Sequence[FieldSelection],
+        path: tuple[str, ...] = (),
+    ) -> list[NormalizedSelection]:
         """Expand wildcard selections into explicit field lists.
+
+        A relationship may be given either as a plain list of fields or as
+        ``{"select": [...], "filter": {...}}``. The optional ``filter`` restricts *which
+        children are loaded* - a different question from a top-level relationship
+        filter, which restricts which parents are returned. It is stripped out here and
+        kept in ``_relationship_filters``, keyed by path, so the normalized selection
+        keeps its simple ``{name: [fields]}`` shape for serialization.
 
         Args:
             model (type[SQLModel]): Model whose fields are being selected.
             fields (list[FieldSelection]): Requested field selections.
+            path (tuple[str, ...]): Relationship path walked so far.
 
         Returns:
             list[FieldSelection]: Normalized field selections with wildcards expanded.
@@ -211,7 +233,7 @@ class QueryBuilder:
                     if field not in normalized_field_names:
                         normalized_field_names.append(field)
             elif isinstance(field, dict):
-                for relationship_name, relationship_fields in field.items():
+                for relationship_name, relationship_spec in field.items():
                     relationship_property: RelationshipProperty | None = (
                         valid_relationships.get(relationship_name)
                     )
@@ -225,90 +247,170 @@ class QueryBuilder:
                     relationship_model: type[SQLModel] = (
                         relationship_property.mapper.class_
                     )
+                    relationship_path = (*path, relationship_name)
+
+                    relationship_fields: Sequence[FieldSelection]
+                    if isinstance(relationship_spec, dict):
+                        relationship_fields = relationship_spec.get("select") or []
+                        child_filter = relationship_spec.get("filter")
+                        if child_filter:
+                            self._relationship_filters[relationship_path] = child_filter
+                    else:
+                        relationship_fields = relationship_spec
+
                     normalized_rel_fields = self._normalize_select_fields(
-                        relationship_model, relationship_fields
+                        relationship_model, relationship_fields, relationship_path
                     )
                     normalized_relationships.append(
                         {relationship_name: normalized_rel_fields}
                     )
 
-        normalized: list[FieldSelection] = list(normalized_field_names)
-        normalized.extend(cast(list[FieldSelection], normalized_relationships))
+        normalized: list[NormalizedSelection] = list(normalized_field_names)
+        normalized.extend(cast(list[NormalizedSelection], normalized_relationships))
         return normalized
 
-    def _select(
-        self, model: type[SQLModel], fields: list[FieldSelection]
-    ) -> SelectResult:
-        """
-        Select fields to be returned in the query.
+    def _relationship_attribute(
+        self,
+        model: type[SQLModel],
+        relationship: RelationshipProperty,
+        path: tuple[str, ...] = (),
+    ) -> Any:
+        """Return the relationship attribute with its extra conditions attached.
 
-        This method supports both direct field selection and relationship field selection
-        through nested dictionaries.
+        Two things can narrow a relationship: the target's authorization scope, and a
+        caller-supplied filter on which children to load. Both ride on the relationship
+        itself via ``and_()``, which the eager loaders and the EXISTS helpers honour
+        alike, so they apply at whatever depth the relationship appears.
+        """
+        attribute = getattr(model, relationship.key)
+        conditions: list[Any] = []
+
+        scope_condition = self._scope_for(relationship.mapper.class_)
+        if scope_condition is not None:
+            conditions.append(scope_condition)
+
+        child_filter = self._relationship_filters.get(path)
+        if child_filter:
+            conditions.extend(
+                FilterBuilder(relationship.mapper.class_).build(child_filter)
+            )
+
+        if conditions:
+            attribute = attribute.and_(*conditions)
+        return attribute
+
+    def _loader_options(
+        self,
+        model: type[SQLModel],
+        fields: list[NormalizedSelection],
+        path: tuple[str, ...] = (),
+    ) -> list[Any]:
+        """Translate a normalized selection into SQLAlchemy loader options.
+
+        Collections use ``selectinload`` (one extra query per relationship, no row
+        multiplication) and to-one relationships use ``joinedload`` (no extra query,
+        still one row per parent). Scalars use ``load_only``.
+
+        Loading relationships this way - rather than flattening them into one SELECT
+        with joins - is what lets LIMIT apply to root records, keeps children from
+        being duplicated by a cartesian product, and makes arbitrary nesting work.
 
         Args:
-            fields (list[FieldSelection]): List of fields to select.
-                Can include nested dictionaries for relationship fields.
-                If None, all fields are selected.
+            model (type[SQLModel]): The model the selection is rooted at.
+            fields (list[FieldSelection]): Normalized field selections.
 
         Returns:
-            SelectResult: tuple containing list of selected columns and joins.
+            list[Any]: Loader options to pass to ``Select.options``.
         """
-        select_columns: list[InstrumentedAttribute] = []
+        options: list[Any] = []
 
-        model_fields: list[str] = []
-        relationships: list[dict[str, list[Any]]] = []
-        for field in fields:
-            if isinstance(field, str):
-                if field not in model_fields:
-                    model_fields.append(field)
-            elif isinstance(field, dict):
-                relationships.append(field)
-
-        # Handling model fields
         valid_model_fields: list[str] = list(model.model_fields.keys())
-        if "*" in model_fields:
-            model_fields = sorted(valid_model_fields)
-
-        for field in model_fields:
+        scalar_fields = []
+        for field in fields:
+            if not isinstance(field, str):
+                continue
             if field not in valid_model_fields:
-                logger.warning(
-                    f"Invalid field: {field}. Valid fields: {valid_model_fields}"
+                # Refuse rather than quietly drop it: silently returning a response
+                # missing a field the caller asked for is worse than failing.
+                raise AttributeError(
+                    f"Field {field} not found in {model.__name__}. "
+                    f"Valid fields: {valid_model_fields}"
                 )
-            select_columns.append(getattr(model, field))
+            scalar_fields.append(field)
+        if scalar_fields:
+            # load_only always keeps primary keys, which selectinload needs anyway.
+            options.append(
+                load_only(*[getattr(model, field) for field in scalar_fields])
+            )
 
-        # Handling relationships
         inspection: Mapper = inspect(model)
-        valid_relationships: set[str] = set(inspection.relationships.keys())
-        joins: list[Join] = []
-        for relationship in relationships:
-            for relationship_name, relationship_fields in relationship.items():
-                if relationship_name not in valid_relationships:
-                    logger.warning(
-                        f"Invalid relationship: {relationship_name}. Valid relationships: {valid_relationships}"
-                    )
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            for relationship_name, relationship_fields in field.items():
                 relationship_property: RelationshipProperty | None = (
                     inspection.relationships.get(relationship_name)
                 )
                 if relationship_property is None:
-                    logger.warning(f"Invalid relationship: {relationship_name}")
+                    logger.warning(
+                        "Invalid relationship: %s. Valid relationships: %s",
+                        relationship_name,
+                        set(inspection.relationships.keys()),
+                    )
                     continue
-                relationship_model: type[SQLModel] = relationship_property.mapper.class_
-                nested = self._select(relationship_model, relationship_fields)
-                select_columns.extend(nested[0])
-                joins.extend(nested[1])
 
-                relationship_attr = getattr(model, relationship_property.key)
-                scope_condition = self._scope_for(relationship_model)
-                if scope_condition is not None:
-                    # The condition must live in the join's ON clause, not in WHERE:
-                    # filtering an outer-joined table in WHERE silently degenerates the
-                    # LEFT JOIN into an INNER JOIN, which would drop parents whose
-                    # children are all invisible instead of returning them with an
-                    # empty list.
-                    relationship_attr = relationship_attr.and_(scope_condition)
-                joins.append(relationship_attr)
+                relationship_path = (*path, relationship_name)
+                attribute = self._relationship_attribute(
+                    model, relationship_property, relationship_path
+                )
+                loader = (
+                    selectinload(attribute)
+                    if relationship_property.uselist
+                    else joinedload(attribute)
+                )
 
-        return select_columns, joins
+                nested_options = self._loader_options(
+                    relationship_property.mapper.class_,
+                    relationship_fields,
+                    relationship_path,
+                )
+                if nested_options:
+                    loader = loader.options(*nested_options)
+                options.append(loader)
+
+        return options
+
+    def _required_relationship_conditions(
+        self,
+        model: type[SQLModel],
+        fields: list[NormalizedSelection],
+        path: tuple[str, ...] = (),
+    ) -> list[Any]:
+        """Build the EXISTS conditions that reproduce inner-join semantics.
+
+        Selecting a relationship used to imply an INNER JOIN, so parents without
+        children were dropped. Eager loading has no such side effect, so the behaviour
+        is restated explicitly - preserving what ``join_type="inner"`` means publicly
+        while changing how it is achieved.
+        """
+        conditions: list[Any] = []
+        inspection: Mapper = inspect(model)
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            for relationship_name in field:
+                relationship_property = inspection.relationships.get(relationship_name)
+                if relationship_property is None:
+                    continue
+                attribute = self._relationship_attribute(
+                    model, relationship_property, (*path, relationship_name)
+                )
+                conditions.append(
+                    attribute.any()
+                    if relationship_property.uselist
+                    else attribute.has()
+                )
+        return conditions
 
     def _normalize_join_type(self, join_type: JoinType | None) -> JoinType:
         """Normalize join_type to a valid value.
@@ -347,10 +449,12 @@ class QueryBuilder:
             fields (list[FieldSelection] | None): List of fields to select.
                 Can include nested dictionaries for relationship fields.
                 If None, all fields are selected.
-            join_type (JoinType | None): Type of join to use for relationships.
-                - 'inner' (default): Uses INNER JOIN - excludes parent records without children
-                - 'left' or 'outer': Uses LEFT OUTER JOIN - includes parent records with empty
-                  lists for relationships when no children exist
+            join_type (JoinType | None): How selected relationships restrict the
+                result. The name is historical - relationships are loaded with eager
+                loaders now, so this is applied as an EXISTS restriction, not a join.
+                - 'inner' (default): excludes parent records without children
+                - 'left' or 'outer': includes parent records, with empty lists for
+                  relationships when no children exist
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
@@ -371,17 +475,29 @@ class QueryBuilder:
             fields = list(self.model.model_fields.keys())
         normalized_fields = self._normalize_select_fields(self.model, fields)
         self.select = normalized_fields
-        select_columns, joins = self._select(self.model, normalized_fields)
-        self.query = select(*select_columns)
 
+        self.query = (
+            select(self.model)
+            .options(*self._loader_options(self.model, normalized_fields))
+            # Without this, an entity already in the session's identity map keeps the
+            # relationship contents it was first loaded with. Two queries differing
+            # only in their scope would then serve the first principal's children for
+            # the second - a correctness bug and an authorization leak.
+            .execution_options(populate_existing=True)
+        )
+
+        # "inner" keeps its public meaning - parents without children are excluded -
+        # but is now expressed as EXISTS instead of a join, so it neither multiplies
+        # rows nor interferes with pagination.
         effective_join_type = self._normalize_join_type(join_type)
-        for join in joins:
-            if effective_join_type == "left":
-                self.query = self.query.outerjoin(join)
-            else:
-                self.query = self.query.join(join)
+        self._required_conditions = (
+            self._required_relationship_conditions(self.model, normalized_fields)
+            if effective_join_type == "inner"
+            else []
+        )
+        for condition in self._required_conditions:
+            self.query = self.query.where(condition)
 
-        # The root model is not reached through a join, so its scope is a plain WHERE.
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             self.query = self.query.where(root_scope)
@@ -409,6 +525,50 @@ class QueryBuilder:
         if filters:
             self.query = self.query.where(*filters)
         return self
+
+    def _sort_expression(self, field_path: str, descending: bool = False) -> Any:
+        """Resolve a sort path to an orderable expression.
+
+        A plain field resolves to its column. A path crossing relationships resolves to
+        a correlated aggregate subquery rather than a join: joining a collection would
+        multiply rows and break LIMIT, which is the bug this engine change exists to
+        fix. ``min`` is used ascending and ``max`` descending, so a parent sorts by its
+        most relevant child either way.
+
+        Args:
+            field_path (str): Dot-separated path, e.g. ``"posts.title"``.
+            descending (bool): Whether the sort is descending.
+
+        Returns:
+            Any: A SQLAlchemy expression usable in ``order_by``.
+
+        Raises:
+            AttributeError: If any segment of the path cannot be resolved.
+        """
+        parts = field_path.split(".")
+        if len(parts) == 1:
+            return getattr(self.model, parts[0])
+
+        join_conditions: list[Any] = []
+        current: type[SQLModel] = self.model
+        for hop in parts[:-1]:
+            mapper: Mapper = inspect(current)
+            relationship = mapper.relationships.get(hop)
+            if relationship is None:
+                raise AttributeError(f"Field {hop} not found in {current.__name__}")
+            join_conditions.append(relationship.primaryjoin)
+            if relationship.secondary is not None:
+                join_conditions.append(relationship.secondaryjoin)
+            current = relationship.mapper.class_
+
+        column = getattr(current, parts[-1])
+        aggregate = func.max if descending else func.min
+        return (
+            select(aggregate(column))
+            .where(and_(*join_conditions))
+            .correlate(self.model)
+            .scalar_subquery()
+        )
 
     def apply_sort(
         self, sort: list[str | dict[str, Any]] | None = None
@@ -450,20 +610,7 @@ class QueryBuilder:
                         )
                         continue
 
-                    # Resolve the column attribute from field path
-                    field_parts = field_key.split(".")
-                    current_entity = self.query.column_descriptions[0]["entity"]
-                    column_attr = None
-                    for i, part in enumerate(field_parts):
-                        if i == len(field_parts) - 1:
-                            column_attr = getattr(current_entity, part)
-                        else:
-                            current_entity = getattr(
-                                current_entity, part
-                            ).property.mapper.class_
-
-                    if column_attr is None:
-                        continue
+                    column_attr = self._sort_expression(field_key)
 
                     # Build CASE expression mapping listed values to ranks
                     whens = [(column_attr == v, i) for i, v in enumerate(order_values)]
@@ -487,26 +634,12 @@ class QueryBuilder:
                 field = sort_str
                 direction = "asc"
 
-            # Handle nested fields (e.g. "posts.title")
-            field_parts = field.split(".")
-            current_entity = self.query.column_descriptions[0]["entity"]
-            order_expr = None
-
-            for i, part in enumerate(field_parts):
-                if i == len(field_parts) - 1:
-                    # Last part of the path - this is the field to sort by
-                    order_expr = getattr(current_entity, part)
-                else:
-                    # Navigate through relationships
-                    current_entity = getattr(
-                        current_entity, part
-                    ).property.mapper.class_
-
-            if order_expr is not None:
-                if direction.lower() == "desc":
-                    self.query = self.query.order_by(order_expr.desc())
-                else:
-                    self.query = self.query.order_by(order_expr)
+            descending = direction == "desc"
+            # Handles nested paths (e.g. "posts.title") without joining.
+            order_expr = self._sort_expression(field, descending=descending)
+            self.query = self.query.order_by(
+                order_expr.desc() if descending else order_expr
+            )
 
         return self
 
@@ -584,9 +717,10 @@ class QueryBuilder:
             sort (list[str] | None): Sort parameters.
             limit (int | None): Maximum number of records.
             offset (int | None): Number of records to skip.
-            join_type (JoinType | None): Type of join for relationships.
-                - 'inner' (default): Uses INNER JOIN
-                - 'left' or 'outer': Uses LEFT OUTER JOIN
+            join_type (JoinType | None): How selected relationships restrict the
+                result.
+                - 'inner' (default): excludes parent records without children
+                - 'left' or 'outer': includes all parent records
 
         Returns:
             QueryBuilder: The query builder instance for method chaining.
@@ -612,7 +746,7 @@ class QueryBuilder:
         )
 
     def _serialize_object(
-        self, obj: SQLModel, fields: list[FieldSelection] | list[str]
+        self, obj: SQLModel, fields: list[NormalizedSelection] | list[str]
     ) -> dict[str, Any]:
         """Serialize an object with only the requested fields.
 
@@ -683,78 +817,22 @@ class QueryBuilder:
             serialized = query_builder.serialize(results)
             ```
         """
-        results = db.exec(self.query).all()
-        return self.reconstruct_objects(cast(list[tuple[Any, ...]], results), model)
+        return list(db.exec(self.query).unique().all())
 
-    def reconstruct_objects(
-        self, results: list[tuple[Any, ...]], model: type[T]
-    ) -> list[T]:
-        """Reconstruct model instances from query results.
+    def exec(self, db: Session) -> list[Any]:
+        """Execute the query and return its raw results.
 
-        Args:
-            results (list[tuple[Any, ...]]): List of query result rows.
-            model (type[T]): The SQLModel model class.
-
-        Returns:
-            list[T]: List of reconstructed model instances.
-        """
-        reconstructed: dict[int, T] = {}  # Track objects by their ID
-        mapper: Mapper = inspect(model)
-
-        id_field = next(field for field in mapper.primary_key)
-
-        # Collect relationship names that should be initialized as empty lists
-        relationship_names: list[str] = []
-        for field in self.select:
-            if isinstance(field, dict):
-                relationship_names.extend(field.keys())
-
-        for row in results:
-            field_idx = [0]
-            obj, field_idx = self.reconstruct_object(model, self.select, row, field_idx)
-
-            # Skip None objects (shouldn't happen for root objects)
-            if obj is None:
-                continue
-
-            # Get the ID of the object
-            obj_id = getattr(obj, id_field.name)
-
-            if obj_id in reconstructed:
-                # If we've seen this object before, update its relationships
-                existing_obj = reconstructed[obj_id]
-                for relation_name in self.select:
-                    if isinstance(relation_name, dict):
-                        for rel_name in relation_name:
-                            existing_rels = getattr(existing_obj, rel_name)
-                            new_rels = getattr(obj, rel_name)
-                            # Add any new related objects that aren't already present
-                            for new_rel in new_rels:
-                                if new_rel not in existing_rels:
-                                    existing_rels.append(new_rel)
-            else:
-                # First time seeing this object
-                # Ensure relationship attributes are initialized as empty lists if not set
-                for rel_name in relationship_names:
-                    rel_property = mapper.relationships.get(rel_name)
-                    if rel_property and rel_property.uselist:
-                        current_val = getattr(obj, rel_name, None)
-                        if current_val is None:
-                            setattr(obj, rel_name, [])
-                reconstructed[obj_id] = obj
-
-        return list(reconstructed.values())
-
-    def exec(self, db: Session) -> list[tuple[Any, ...]]:
-        """Execute the query and return raw results.
+        The query selects entities rather than a flat list of columns, so this yields
+        model instances with their relationships already loaded - not column tuples as
+        it did while relationships were flattened into a single SELECT.
 
         Args:
             db (Session): The SQLModel database session.
 
         Returns:
-            list[tuple[Any, ...]]: Raw query results.
+            list[Any]: Raw query results.
         """
-        return db.exec(self.query).unique().all()  # type: ignore
+        return list(db.exec(self.query).unique().all())
 
     def count(self, db: Session) -> int:
         """Return the total number of root records matching current filters.
@@ -786,6 +864,11 @@ class QueryBuilder:
         if root_scope is not None:
             count_query = count_query.where(root_scope)
 
+        # Same inner-join restriction the fetch applies, so total describes the same
+        # set of records the page was cut from.
+        for condition in self._required_conditions:
+            count_query = count_query.where(condition)
+
         # For sync sessions, exec() returns ScalarResult; use one()/first()
         result_obj = db.exec(count_query)
         try:
@@ -794,66 +877,6 @@ class QueryBuilder:
         except Exception:
             value_sync_opt: int | None = result_obj.first()
             return int(value_sync_opt or 0)
-
-    def reconstruct_object(
-        self,
-        model: type[T],
-        fields: list[FieldSelection],
-        row: tuple[Any, ...],
-        field_idx: list[int],
-    ) -> tuple[T | None, list[int]]:
-        """Reconstruct a model instance from a query result row.
-
-        This method handles both direct fields and relationship fields.
-
-        Args:
-            model (type[T]): The SQLModel model class.
-            fields (list[FieldSelection]): Fields to include.
-            row (tuple[Any, ...]): The query result row.
-            field_idx (list[int]): Current field index for tracking position in row.
-
-        Returns:
-            tuple[T | None, list[int]]: The reconstructed model instance (or None if all
-                fields are None, indicating no match in a LEFT JOIN) and updated field index.
-        """
-        mapper: Mapper = inspect(model)
-        obj_kwargs: dict[str, Any] = {}
-        related_objs: dict[str, list[Any]] = {}
-
-        for field in fields:
-            if isinstance(field, str):
-                obj_kwargs[field] = row[field_idx[0]]
-                field_idx[0] += 1
-            elif isinstance(field, dict):
-                for relation_name, relation_fields in field.items():
-                    relation = mapper.relationships[relation_name]
-                    related_model: type[T] = relation.mapper.class_
-                    # Recursively reconstruct related object(s)
-                    related_obj, field_idx = self.reconstruct_object(
-                        related_model,
-                        relation_fields,
-                        row,
-                        field_idx,
-                    )
-                    # Only add non-None related objects (None indicates LEFT JOIN with no match)
-                    if related_obj is not None:
-                        related_objs.setdefault(relation_name, []).append(related_obj)
-
-        # Check if all direct field values are None (LEFT JOIN with no match)
-        all_fields_none = all(v is None for v in obj_kwargs.values())
-        if all_fields_none and obj_kwargs:
-            return None, field_idx
-
-        obj: T = model(**obj_kwargs)
-        for relation_name, rel_objs in related_objs.items():
-            relation = mapper.relationships[relation_name]
-            if relation.uselist:
-                # Many relationship (one-to-many or many-to-many)
-                setattr(obj, relation_name, rel_objs)
-            else:
-                # To-one relationship (one-to-one or many-to-one)
-                setattr(obj, relation_name, rel_objs[0] if rel_objs else None)
-        return obj, field_idx
 
     async def fetch_async(self, db: AsyncSession, model: type[T]) -> list[T]:
         """Execute the query asynchronously and return the results.
@@ -879,18 +902,16 @@ class QueryBuilder:
             ```
         """
         results = await db.execute(self.query)
-        return self.reconstruct_objects(
-            cast(list[tuple[Any, ...]], results.all()), model
-        )
+        return list(results.unique().scalars().all())
 
-    async def exec_async(self, db: AsyncSession) -> list[tuple[Any, ...]]:
-        """Execute the query asynchronously and return raw results.
+    async def exec_async(self, db: AsyncSession) -> list[Any]:
+        """Execute the query asynchronously and return its raw results.
 
         Args:
             db (AsyncSession): The SQLModel async database session.
 
         Returns:
-            list[tuple[Any, ...]]: Raw query results.
+            list[Any]: Raw query result rows.
         """
         # Note: We use execute() instead of exec() because exec() is not available
         # for AsyncSession. This warning is more relevant for synchronous sessions.
@@ -921,6 +942,11 @@ class QueryBuilder:
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             count_query = count_query.where(root_scope)
+
+        # Same inner-join restriction the fetch applies, so total describes the same
+        # set of records the page was cut from.
+        for condition in self._required_conditions:
+            count_query = count_query.where(condition)
 
         results = await db.execute(count_query)
         # Prefer scalar_one if available; otherwise fall back to scalar/first
@@ -1062,7 +1088,7 @@ class QueryBuilder:
             group_key: The group key value to filter by.
             limit: Maximum items to return.
             offset: Number of items to skip.
-            join_type: Type of join for relationships ('inner', 'left', or 'outer').
+            join_type: Relationship restriction ('inner', 'left', or 'outer').
 
         Returns:
             List of model instances for the group.
@@ -1074,8 +1100,12 @@ class QueryBuilder:
         # Reuses the same BoundScopes, so its resolver cache is shared and no group
         # costs an extra resolver call.
         group_builder = QueryBuilder(model, scopes=self.scopes)
+        # Carry over which-children-to-load filters; re-normalizing self.select alone
+        # would silently drop them, since normalization is what moves them aside.
+        group_builder._relationship_filters = dict(self._relationship_filters)
         group_builder.apply_select(
-            self.select if self.select else None, join_type=join_type
+            cast(list[FieldSelection], self.select) if self.select else None,
+            join_type=join_type,
         )
 
         # Combine existing filters with group filter
@@ -1117,7 +1147,7 @@ class QueryBuilder:
             group_key: The group key value to filter by.
             limit: Maximum items to return.
             offset: Number of items to skip.
-            join_type: Type of join for relationships ('inner', 'left', or 'outer').
+            join_type: Relationship restriction ('inner', 'left', or 'outer').
 
         Returns:
             List of model instances for the group.
@@ -1128,8 +1158,12 @@ class QueryBuilder:
         # Reuses the same BoundScopes, so its resolver cache is shared and no group
         # costs an extra resolver call.
         group_builder = QueryBuilder(model, scopes=self.scopes)
+        # Carry over which-children-to-load filters; re-normalizing self.select alone
+        # would silently drop them, since normalization is what moves them aside.
+        group_builder._relationship_filters = dict(self._relationship_filters)
         group_builder.apply_select(
-            self.select if self.select else None, join_type=join_type
+            cast(list[FieldSelection], self.select) if self.select else None,
+            join_type=join_type,
         )
 
         combined_filter = dict(self.filter) if self.filter else {}
@@ -1180,6 +1214,11 @@ class QueryBuilder:
         if root_scope is not None:
             count_query = count_query.where(root_scope)
 
+        # Same inner-join restriction the fetch applies, so total describes the same
+        # set of records the page was cut from.
+        for condition in self._required_conditions:
+            count_query = count_query.where(condition)
+
         count_query = count_query.where(group_expr == group_key)
 
         result = db.exec(count_query)
@@ -1223,6 +1262,11 @@ class QueryBuilder:
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             count_query = count_query.where(root_scope)
+
+        # Same inner-join restriction the fetch applies, so total describes the same
+        # set of records the page was cut from.
+        for condition in self._required_conditions:
+            count_query = count_query.where(condition)
 
         count_query = count_query.where(group_expr == group_key)
 

@@ -134,15 +134,15 @@ Current limits
 --------------
 
 Model scopes make authorization possible; on their own they do not make every query
-safe. These gaps remain and are addressed in later work:
+safe. What remains:
 
-- **Scopes only reach models that a join brings in through** ``select``. Filtering or
-  sorting on a relationship does not currently add a join, so
-  ``filter={"posts.title": ...}`` without ``posts`` in ``select`` is not covered by the
-  ``Post`` scope.
-- **Nesting three levels or deeper is not reliable**, because the join order produced
-  for deep chains is itself broken.
-- ``count()`` **with a relationship filter is still invalid** - the count query is built
-  without joins. Scopes cover the root model there, nothing more.
 - **Field-level control does not exist yet.** Any column of a visible row can be
-  selected and filtered on, sensitive ones included.
+  selected and filtered on, sensitive ones included. Scopes decide *which rows*, not
+  *which columns*.
+- **A scope narrows what a relationship loads, not what a filter can probe.** A caller
+  can still filter on a related field they cannot read - for example
+  ``filter={"posts.title": {"cont": "secret"}}`` - and learn something from which
+  parents come back. Closing that needs the field-level layer above.
+
+Two limits documented here previously are gone: scopes now reach relationships at any
+depth whether or not they are selected, and ``count()`` honours them.

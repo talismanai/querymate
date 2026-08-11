@@ -8,14 +8,24 @@ from typing_extensions import TypeAliasType
 T = TypeVar("T")
 
 # A selected field is either a column name or a relationship mapped to its own
-# selection. The alias is recursive because a relationship's selection may itself
-# contain relationships - the non-recursive `dict[str, list[str]]` this replaced
-# contradicted the documented support for nested selections.
+# selection. A relationship's value is normally a list of fields, and may instead be
+# {"select": [...], "filter": {...}} to also restrict which children are loaded.
 #
-# TypeAliasType (rather than a plain alias with a forward reference) is what lets
-# Pydantic build a schema for a recursive type instead of recursing forever.
+# The alias is recursive because a relationship's selection may itself contain
+# relationships - the non-recursive `dict[str, list[str]]` this replaced contradicted
+# the documented support for nested selections. TypeAliasType (rather than a plain
+# alias with a forward reference) is what lets Pydantic build a schema for a recursive
+# type instead of recursing forever.
 FieldSelection = TypeAliasType(
-    "FieldSelection", "str | dict[str, list[FieldSelection]]"
+    "FieldSelection",
+    "str | dict[str, list[FieldSelection] | dict[str, Any]]",
+)
+
+# What a selection looks like after normalization: wildcards expanded and the
+# {"select": ..., "filter": ...} form reduced to a plain field list, with the filter
+# moved aside. Everything downstream of normalization works with this narrower shape.
+NormalizedSelection = TypeAliasType(
+    "NormalizedSelection", "str | dict[str, list[NormalizedSelection]]"
 )
 
 
