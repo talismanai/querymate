@@ -37,15 +37,18 @@ def mapper_of(model: type[Any]) -> Mapper:
     Raises:
         TypeError: If the class is not a mapped ORM model.
     """
+    name = getattr(model, "__name__", None) or repr(model)
     try:
         mapper = sa_inspect(model)
     except NoInspectionAvailable as error:
         raise TypeError(
-            f"{model.__name__} is not a mapped ORM model. QueryMate queries "
-            "SQLModel table classes and SQLAlchemy declarative models."
+            f"{name} is not a mapped ORM model. QueryMate queries SQLModel table "
+            "classes and SQLAlchemy declarative models."
         ) from error
     if not isinstance(mapper, Mapper):
-        raise TypeError(f"{model.__name__} is not a mapped ORM model.")
+        # Reached by things SQLAlchemy can inspect but that are not models - a Table,
+        # an instance - which have no __name__ to report.
+        raise TypeError(f"{name} is not a mapped ORM model.")
     return mapper
 
 
@@ -110,17 +113,13 @@ def _annotated_type(model: type[Any], field: str) -> type | None:
 def is_nullable(model: type[Any], field: str) -> bool:
     """Whether a field may be null, so a client can type it as optional.
 
-    The column is the authority - it is what the database enforces - and a field with
-    no column at all is treated as nullable rather than guessed at.
+    The column is the authority: it is what the database enforces, and it is the same
+    answer for either ORM. A name with no column is reported nullable rather than
+    guessed at - callers only ask about fields that came from the mapper, so this is
+    the answer for a name that is not a field at all.
     """
     column = column_of(model, field)
-    if column is not None:
-        return bool(column.nullable)
-    fields = getattr(model, "model_fields", None)
-    field_info = fields.get(field) if fields else None
-    if field_info is None:
-        return True
-    return not field_info.is_required()
+    return True if column is None else bool(column.nullable)
 
 
 def exec_select(db: Any, query: Any) -> Any:

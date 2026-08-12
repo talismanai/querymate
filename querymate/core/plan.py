@@ -44,10 +44,8 @@ def _sort_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _canonical_selection(fields: Any) -> list[Any]:
+def _canonical_selection(fields: list[Any]) -> list[Any]:
     """Canonicalize a selection: sorted, since asking for two fields has no order."""
-    if not isinstance(fields, list):
-        return []
     canonical: list[Any] = []
     for field in fields:
         if isinstance(field, dict):

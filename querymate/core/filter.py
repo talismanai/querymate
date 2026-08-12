@@ -785,12 +785,16 @@ class FilterBuilder:
                 and_conditions = []
                 for cond in condition:
                     and_conditions.extend(self._parse(model, cond))
-                filters.append(and_(*and_conditions))
+                # A group with no branches restricts nothing, and an empty and_() is
+                # deprecated in SQLAlchemy besides.
+                if and_conditions:
+                    filters.append(and_(*and_conditions))
             elif field == "or":
                 or_conditions = []
                 for cond in condition:
                     or_conditions.extend(self._parse(model, cond))
-                filters.append(or_(*or_conditions))
+                if or_conditions:
+                    filters.append(or_(*or_conditions))
             elif "." in field:
                 head, remainder = field.split(".", 1)
                 nested.setdefault(head, {})[remainder] = condition

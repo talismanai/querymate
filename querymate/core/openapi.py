@@ -263,14 +263,22 @@ class ResolvedExposure:
         """Names of the relationships this level may expand."""
         return list(self._relationship_exposure)
 
+    def children(self) -> list[tuple[str, "ResolvedExposure"]]:
+        """Every expandable relationship paired with its own exposure, in name order.
+
+        Callers used to walk :attr:`relationships` and call :meth:`child` themselves,
+        each carrying a "cannot happen" branch for the None that a name taken from
+        that very list never produces. Pairing them once removes the branch.
+        """
+        resolved = ((name, self.child(name)) for name in sorted(self.relationships))
+        return [(name, child) for name, child in resolved if child is not None]
+
     def child(self, name: str) -> "ResolvedExposure | None":
         """Resolve the exposure of a relationship, or None if it is not expandable."""
         if name not in self._relationship_exposure or self.depth >= self.max_depth:
             return None
-        mapper: Mapper = inspect(self.model)
-        relationship = mapper.relationships.get(name)
-        if relationship is None:
-            return None
+        # The name came from this mapper's relationships, narrowed but never widened.
+        relationship = inspect(self.model).relationships[name]
         return ResolvedExposure(
             relationship.mapper.class_,
             self._relationship_exposure[name],
@@ -358,10 +366,7 @@ def _field_schema(
         }
     ]
     relationship_properties: dict[str, Any] = {}
-    for name in sorted(exposure.relationships):
-        child = exposure.child(name)
-        if child is None:
-            continue
+    for name, child in exposure.children():
         if child.model in seen:
             relationship_properties[name] = {"description": _REPEATS}
             continue
@@ -423,10 +428,7 @@ def _filter_schema(exposure: ResolvedExposure) -> dict[str, Any]:
         }
 
     # Dotted paths through relationships select parents via EXISTS.
-    for name in sorted(exposure.relationships):
-        child = exposure.child(name)
-        if child is None:
-            continue
+    for name, child in exposure.children():
         for field in sorted(child.filterable):
             properties[f"{name}.{field}"] = {
                 "description": (

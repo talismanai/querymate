@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 
-from querymate.core.compat import ModelClass
 from querymate.core.config import settings
 from querymate.types import PaginationInfo
 
@@ -224,10 +223,8 @@ class GroupKeyExtractor:
             SQLAlchemy expression for date truncation.
         """
         tz_offset = config.get_tz_offset_hours()
-        granularity = config.granularity
-
-        if granularity is None:
-            return column
+        # Only reached through is_date_grouping, which is what guarantees there is one.
+        granularity = cast(DateGranularity, config.granularity)
 
         if self.dialect == "postgresql":
             return self._postgres_date_trunc(column, granularity, tz_offset)
@@ -295,36 +292,6 @@ class GroupKeyExtractor:
             return func.strftime(format_str, column, offset_modifier)
 
         return func.strftime(format_str, column)
-
-
-class DefaultFieldResolver:
-    """Resolves field paths to SQLAlchemy column objects."""
-
-    def resolve(self, model: ModelClass, field_path: str) -> InstrumentedAttribute:
-        """Resolve a field path to a SQLAlchemy column.
-
-        Args:
-            model: The SQLModel class to start resolution from.
-            field_path: The dot-separated path to the field.
-
-        Returns:
-            The resolved SQLAlchemy column.
-
-        Raises:
-            AttributeError: If the field path cannot be resolved.
-        """
-        parts = field_path.split(".")
-        current: Any = model
-        for part in parts:
-            if hasattr(current, part):
-                attr = getattr(current, part)
-                if hasattr(attr, "property") and hasattr(attr.property, "mapper"):
-                    current = attr.property.mapper.class_
-                else:
-                    current = attr
-            else:
-                raise AttributeError(f"Field {part} not found in {current}")
-        return cast(InstrumentedAttribute[Any], current)
 
 
 class GroupResult(BaseModel):

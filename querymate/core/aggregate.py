@@ -36,10 +36,6 @@ AGGREGATE_FUNCTIONS: dict[str, Any] = {
     "max": func.max,
 }
 
-# Which aggregates return a number regardless of the column's type. count always does;
-# sum and avg widen; min and max keep the column's type.
-_NUMERIC_RESULT = {"count", "sum", "avg"}
-
 # Which ones need a number to work on. Summing a name is a mistake worth catching in
 # the documented surface rather than in the database.
 _NUMERIC_ONLY = {"sum", "avg"}
@@ -127,11 +123,6 @@ class Aggregation:
         # answer depend on the library rather than on the query.
         aggregate = AGGREGATE_FUNCTIONS[self.function](column)
         return aggregate.label(self.alias)
-
-    @property
-    def result_is_numeric(self) -> bool:
-        """Whether the result's type comes from the function rather than the column."""
-        return self.function in _NUMERIC_RESULT
 
 
 def parse_aggregations(spec: Any) -> list[Aggregation]:

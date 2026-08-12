@@ -108,17 +108,18 @@ def _invalid_query(error: ValidationError) -> InvalidQueryError:
     Pydantic's own message is a list of dicts about ``loc`` and ``input``; a client
     that sent ``fitler`` needs to be told that word, and which words exist.
     """
-    for detail in error.errors():
-        location = detail.get("loc") or ()
-        key = ".".join(str(part) for part in location) or "query"
-        if detail.get("type") == "extra_forbidden":
-            return InvalidQueryError(
-                f"Unknown key '{key}' in the query.",
-                key=key,
-                valid_keys=sorted(_QUERY_KEYS),
-            )
-        return InvalidQueryError(f"Invalid query: {key}: {detail.get('msg')}", key=key)
-    return InvalidQueryError("Invalid query.")
+    # A ValidationError always carries at least one error, and the first is the one
+    # worth reporting: a client fixes them one at a time anyway.
+    detail = error.errors()[0]
+    location = detail.get("loc") or ()
+    key = ".".join(str(part) for part in location) or "query"
+    if detail.get("type") == "extra_forbidden":
+        return InvalidQueryError(
+            f"Unknown key '{key}' in the query.",
+            key=key,
+            valid_keys=sorted(_QUERY_KEYS),
+        )
+    return InvalidQueryError(f"Invalid query: {key}: {detail.get('msg')}", key=key)
 
 
 # Type aliases for better readability

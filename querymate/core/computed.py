@@ -127,13 +127,6 @@ def computed_names(
     return sorted(names)
 
 
-def is_computed(
-    model: ModelClass, name: str, registry: ComputedRegistry | None = None
-) -> bool:
-    """Whether ``name`` is a computed field of ``model``."""
-    return name in computed_names(model, registry)
-
-
 def computed_expression(
     model: ModelClass, name: str, registry: ComputedRegistry | None = None
 ) -> Any:

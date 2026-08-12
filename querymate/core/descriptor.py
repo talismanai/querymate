@@ -157,13 +157,8 @@ class DescriptorBuilder:
 
         mapper: Mapper = inspect(exposure.model)
         relationships: dict[str, Any] = {}
-        for relationship_name in sorted(exposure.relationships):
-            child = exposure.child(relationship_name)
-            if child is None:
-                continue
-            relationship = mapper.relationships.get(relationship_name)
-            if relationship is None:
-                continue
+        for relationship_name, child in exposure.children():
+            relationship = mapper.relationships[relationship_name]
             relationships[relationship_name] = {
                 "target": self.add_resource(child),
                 "cardinality": "many" if relationship.uselist else "one",

@@ -35,6 +35,7 @@ from querymate.core.cursor import (
 )
 from querymate.core.exceptions import (
     DepthExceededError,
+    InvalidQueryError,
     SelectionTooLargeError,
     UnknownFieldError,
     UnknownRelationshipError,
@@ -185,9 +186,8 @@ class QueryBuilder:
             if not isinstance(field, dict):
                 continue
             for relationship_name, relationship_fields in field.items():
-                relationship_property = inspection.relationships.get(relationship_name)
-                if relationship_property is None:
-                    continue
+                # Normalization validated the name, so the lookup cannot miss.
+                relationship_property = inspection.relationships[relationship_name]
                 related_model: ModelClass = relationship_property.mapper.class_
                 for nested in self._models_in_select(
                     related_model, relationship_fields
@@ -335,7 +335,7 @@ class QueryBuilder:
         for field in fields:
             if isinstance(field, str):
                 self._check_field(model, field, "selected", exposure)
-            elif isinstance(field, dict):
+            else:
                 for relationship_name, nested in field.items():
                     child_model, child_exposure = self._check_relationship(
                         model, relationship_name, exposure
@@ -620,9 +620,8 @@ class QueryBuilder:
             by_id = {getattr(child, child_pk_name): child for child in children}
             grouped: dict[Any, list[Any]] = {pid: [] for pid in parent_ids}
             for parent_id, child_id in rows:
-                child = by_id.get(child_id)
-                if child is not None:
-                    grouped.setdefault(parent_id, []).append(child)
+                # Both ids came from the ranking query, so the child is always here.
+                grouped.setdefault(parent_id, []).append(by_id[child_id])
             for parent in parents:
                 # set_committed_value populates the collection as if it had been
                 # loaded. A plain assignment would be a mutation, and SQLAlchemy would
@@ -759,15 +758,9 @@ class QueryBuilder:
             if not isinstance(field, dict):
                 continue
             for relationship_name, relationship_fields in field.items():
-                relationship_property: RelationshipProperty | None = (
-                    inspection.relationships.get(relationship_name)
-                )
-                if relationship_property is None:
-                    raise UnknownRelationshipError(
-                        relationship_name,
-                        model.__name__,
-                        set(inspection.relationships.keys()),
-                    )
+                relationship_property: RelationshipProperty = inspection.relationships[
+                    relationship_name
+                ]
 
                 relationship_path = (*path, relationship_name)
                 if self._windowed_relationship(
@@ -814,9 +807,8 @@ class QueryBuilder:
             if not isinstance(field, dict):
                 continue
             for relationship_name in field:
-                relationship_property = inspection.relationships.get(relationship_name)
-                if relationship_property is None:
-                    continue
+                # Same as above: the selection was normalized before reaching here.
+                relationship_property = inspection.relationships[relationship_name]
                 attribute = self._relationship_attribute(
                     model, relationship_property, (*path, relationship_name)
                 )
@@ -1147,7 +1139,7 @@ class QueryBuilder:
                 self.keyset_fingerprint(),
             )
             condition = keyset_condition(columns, keys, values)
-            if condition is not None:
+            if condition is not None:  # pragma: no branch - the PK key is never null
                 self.query = self.query.where(condition)
         return self
 
@@ -1644,20 +1636,55 @@ class QueryBuilder:
             )
         return getattr(self.model, field)
 
-    def _group_column(self, field_path: str) -> InstrumentedAttribute:
+    def _group_column(self, field_path: str) -> Any:
         """Resolve a group-by field, refusing one this caller may not read or filter.
 
         Grouping hands back the field's distinct values as keys, so it discloses the
         column just as selecting it would; it also partitions the rows, which is what
         filtering does. Both checks apply.
 
+        A path crossing a relationship becomes a correlated scalar subquery, not a
+        join. Naming the related column directly produced a cartesian product - every
+        record appeared once per row of the other table, so both the groups and their
+        counts were wrong.
+
         Raises:
             UnknownFieldError: If the field is outside what this caller may use.
+            InvalidQueryError: If the path crosses a collection, where a record would
+                belong to several groups at once.
         """
         if self._access_is_restricted():
             self._enforce_path_access(self.model, field_path, "selected", self.exposure)
             self._enforce_path_access(self.model, field_path, "filtered", self.exposure)
-        return self._resolve_column(field_path)
+
+        parts = field_path.split(".")
+        if len(parts) == 1:
+            return self._resolve_column(field_path)
+
+        join_conditions: list[Any] = []
+        current: ModelClass = self.model
+        for hop in parts[:-1]:
+            mapper: Mapper = inspect(current)
+            relationship = mapper.relationships.get(hop)
+            if relationship is None:
+                raise AttributeError(f"Field {hop} not found in {current.__name__}")
+            if relationship.uselist:
+                raise InvalidQueryError(
+                    f"Cannot group by '{field_path}': '{hop}' is a collection, so a "
+                    "record would belong to several groups at once. Group by one of "
+                    "the record's own fields, or by a to-one relationship's field.",
+                    field=field_path,
+                    relationship=hop,
+                )
+            join_conditions.append(relationship.primaryjoin)
+            current = relationship.mapper.class_
+
+        return (
+            select(getattr(current, parts[-1]))
+            .where(and_(*join_conditions))
+            .correlate(self.model)
+            .scalar_subquery()
+        )
 
     def _aggregate_query(
         self,
@@ -1851,9 +1878,8 @@ class QueryBuilder:
 
         grouped: dict[Any, list[Any]] = {}
         for pk, group_key in rows:
-            entity = by_pk.get(pk)
-            if entity is not None:
-                grouped.setdefault(group_key, []).append(entity)
+            # The entities were fetched by exactly these primary keys.
+            grouped.setdefault(group_key, []).append(by_pk[pk])
         return grouped
 
     def fetch_all_groups(
