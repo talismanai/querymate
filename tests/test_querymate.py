@@ -86,7 +86,8 @@ def test_to_qs() -> None:
 
     # Compare the decoded payload rather than the percent-encoded blob: the encoded
     # form pins key order and every default, so it broke on any field change while
-    # saying nothing about whether the round trip works.
+    # saying nothing about whether the round trip works. Blocks the caller did not
+    # use are absent rather than null.
     assert qs.startswith("q=")
     assert json.loads(unquote_plus(qs[len("q=") :])) == {
         "select": ["id", "name"],
@@ -94,8 +95,6 @@ def test_to_qs() -> None:
         "sort": ["-age"],
         "limit": 10,
         "offset": 0,
-        "group_by": None,
-        "join_type": None,
     }
     assert Querymate.from_qs(QueryParams(qs)) == querymate
 
@@ -116,8 +115,6 @@ def test_to_query_param() -> None:
         "sort": ["-age"],
         "limit": 10,
         "offset": 0,
-        "group_by": None,
-        "join_type": None,
     }
     assert Querymate.from_query_param(qp) == querymate
 

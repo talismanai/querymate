@@ -34,6 +34,14 @@ class QueryMateSettings(BaseSettings):
         default="offset", description="Offset parameter name"
     )
 
+    # Aggregation
+    AGGREGATE_PARAM_NAME: str = Field(
+        default="aggregate", description="Aggregate parameter name"
+    )
+    HAVING_PARAM_NAME: str = Field(
+        default="having", description="Aggregate condition parameter name"
+    )
+
     # Logging configuration
     LOG_FORMAT: str = Field(
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

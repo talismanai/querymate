@@ -28,6 +28,7 @@ from querymate.core.scope import BoundScopes
 from querymate.types import FieldSelection, NormalizedSelection
 
 if TYPE_CHECKING:
+    from querymate.core.aggregate import Aggregation
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
     from querymate.core.openapi import ResolvedExposure
 
@@ -341,6 +342,23 @@ class QueryBuilder:
             else:
                 self._check_field(model, head, "filtered", exposure)
 
+    def _enforce_path_access(
+        self,
+        model: type[SQLModel],
+        field_path: str,
+        usage: str,
+        exposure: "ResolvedExposure | None",
+    ) -> None:
+        """Reject a dotted path whose relationships or leaf this caller may not use."""
+        head, _, remainder = field_path.partition(".")
+        if remainder:
+            child_model, child_exposure = self._check_relationship(
+                model, head, exposure
+            )
+            self._enforce_path_access(child_model, remainder, usage, child_exposure)
+        else:
+            self._check_field(model, head, usage, exposure)
+
     def _enforce_sort_access(
         self,
         model: type[SQLModel],
@@ -348,14 +366,7 @@ class QueryBuilder:
         exposure: "ResolvedExposure | None",
     ) -> None:
         """Reject a sort naming a field this caller may not sort on."""
-        head, _, remainder = field_path.partition(".")
-        if remainder:
-            child_model, child_exposure = self._check_relationship(
-                model, head, exposure
-            )
-            self._enforce_sort_access(child_model, remainder, child_exposure)
-        else:
-            self._check_field(model, head, "sorted", exposure)
+        self._enforce_path_access(model, field_path, "sorted", exposure)
 
     def _access_is_restricted(self) -> bool:
         """Whether any access rule applies, so enforcement can be skipped when none do."""
@@ -1430,7 +1441,7 @@ class QueryBuilder:
         Returns:
             List of (group_key, count) tuples ordered naturally.
         """
-        column = self._resolve_column(group_config.field)
+        column = self._group_column(group_config.field)
         group_expr = extractor.get_group_key_expression(column, group_config)
 
         mapper: Mapper = inspect(self.model)
@@ -1476,7 +1487,7 @@ class QueryBuilder:
         Returns:
             List of (group_key, count) tuples ordered naturally.
         """
-        column = self._resolve_column(group_config.field)
+        column = self._group_column(group_config.field)
         group_expr = extractor.get_group_key_expression(column, group_config)
 
         mapper: Mapper = inspect(self.model)
@@ -1502,6 +1513,157 @@ class QueryBuilder:
 
         results = await db.execute(keys_query)
         return [(row[0], row[1]) for row in results.all()]
+
+    def _aggregate_column(self, field: str) -> Any:
+        """Resolve a field to aggregate, refusing one this caller may not read.
+
+        Summing or averaging a column is a read of it - a caller who cannot select
+        ``salary`` must not be able to ask for its average either - so the check is the
+        same one a selection goes through.
+
+        Raises:
+            UnknownFieldError: If the field does not exist or is not readable here.
+        """
+        if self._access_is_restricted():
+            self._enforce_path_access(self.model, field, "selected", self.exposure)
+
+        if field in computed_names(self.model, self.computed):
+            return computed_expression(self.model, field, self.computed)
+
+        mapper: Mapper = inspect(self.model)
+        if field not in mapper.columns:
+            raise UnknownFieldError(
+                field, self.model.__name__, sorted(mapper.columns.keys())
+            )
+        return getattr(self.model, field)
+
+    def _group_column(self, field_path: str) -> InstrumentedAttribute:
+        """Resolve a group-by field, refusing one this caller may not read or filter.
+
+        Grouping hands back the field's distinct values as keys, so it discloses the
+        column just as selecting it would; it also partitions the rows, which is what
+        filtering does. Both checks apply.
+
+        Raises:
+            UnknownFieldError: If the field is outside what this caller may use.
+        """
+        if self._access_is_restricted():
+            self._enforce_path_access(self.model, field_path, "selected", self.exposure)
+            self._enforce_path_access(self.model, field_path, "filtered", self.exposure)
+        return self._resolve_column(field_path)
+
+    def _aggregate_query(
+        self,
+        aggregations: list["Aggregation"],
+        group_config: "GroupByConfig | None" = None,
+        extractor: "GroupKeyExtractor | None" = None,
+        having: dict[str, Any] | None = None,
+    ) -> Any:
+        """Build the aggregate query, optionally grouped and filtered by HAVING.
+
+        Filters and authorization scopes apply exactly as they do to a listing, so an
+        aggregate can never summarise rows the caller could not have read one by one.
+        """
+        aggregate_columns = [
+            aggregation.expression(self._aggregate_column)
+            for aggregation in aggregations
+        ]
+        columns: list[Any] = list(aggregate_columns)
+
+        group_expression = None
+        if group_config is not None and extractor is not None:
+            column = self._group_column(group_config.field)
+            group_expression = extractor.get_group_key_expression(column, group_config)
+            columns.insert(0, group_expression.label("qm_group_key"))
+
+        query = sa_select(*columns).select_from(self.model)
+
+        if self.filter:
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
+            if filters:
+                query = query.where(*filters)
+        root_scope = self._scope_for(self.model)
+        if root_scope is not None:
+            query = query.where(root_scope)
+        for condition in self._required_conditions:
+            query = query.where(condition)
+
+        if group_expression is not None:
+            query = query.group_by(group_expression).order_by(group_expression)
+
+        if having:
+            # HAVING names aggregate aliases, not columns, so it is built from the
+            # labelled expressions rather than resolved against the model.
+            by_alias = {
+                aggregation.alias: column
+                for aggregation, column in zip(
+                    aggregations, aggregate_columns, strict=True
+                )
+            }
+            query = query.having(*self._having_conditions(having, by_alias))
+
+        return query
+
+    def _having_conditions(
+        self, having: dict[str, Any], by_alias: dict[str, Any]
+    ) -> list[Any]:
+        """Turn the HAVING block into conditions over the aggregate expressions."""
+        conditions: list[Any] = []
+        for alias, condition in having.items():
+            expression = by_alias.get(alias)
+            if expression is None:
+                raise UnknownFieldError(alias, self.model.__name__, sorted(by_alias))
+            builder = FilterBuilder(self.model, computed=self.computed)
+            conditions.append(builder._leaf_condition(expression, condition))
+        return conditions
+
+    def aggregate(
+        self,
+        db: Session,
+        aggregations: list["Aggregation"],
+        group_config: "GroupByConfig | None" = None,
+        extractor: "GroupKeyExtractor | None" = None,
+        having: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute an aggregate query and return one dict per group."""
+        query = self._aggregate_query(aggregations, group_config, extractor, having)
+        return self._aggregate_rows(
+            list(db.execute(query).all()), aggregations, group_config
+        )
+
+    async def aggregate_async(
+        self,
+        db: AsyncSession,
+        aggregations: list["Aggregation"],
+        group_config: "GroupByConfig | None" = None,
+        extractor: "GroupKeyExtractor | None" = None,
+        having: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Async counterpart of :meth:`aggregate`."""
+        query = self._aggregate_query(aggregations, group_config, extractor, having)
+        result = await db.execute(query)
+        return self._aggregate_rows(list(result.all()), aggregations, group_config)
+
+    def _aggregate_rows(
+        self,
+        rows: Sequence[Any],
+        aggregations: list["Aggregation"],
+        group_config: "GroupByConfig | None",
+    ) -> list[dict[str, Any]]:
+        """Shape aggregate rows into dicts, with the group key first when grouped."""
+        grouped = group_config is not None
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            offset = 1 if grouped else 0
+            entry: dict[str, Any] = {}
+            if grouped:
+                entry["key"] = None if row[0] is None else str(row[0])
+            for index, aggregation in enumerate(aggregations):
+                entry[aggregation.alias] = row[index + offset]
+            results.append(entry)
+        return results
 
     def _group_order_by(self) -> list[Any]:
         """Ordering used inside each group's window.
@@ -1537,7 +1699,7 @@ class QueryBuilder:
         group. This replaces one query per group, which made a grouped request cost
         time proportional to how many distinct values the data happened to contain.
         """
-        column = self._resolve_column(group_config.field)
+        column = self._group_column(group_config.field)
         group_expr = extractor.get_group_key_expression(column, group_config)
         mapper: Mapper = inspect(self.model)
         pk_col = next(col for col in mapper.primary_key)

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
+from querymate.core.aggregate import parse_aggregations
 from querymate.core.computed import ComputedRegistry
 from querymate.core.config import settings
 from querymate.core.exceptions import InvalidQueryError
@@ -118,6 +119,19 @@ class Querymate(BaseModel):
         ge=0,
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
+    )
+    aggregate: dict[str, Any] | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Aggregates to compute, as {name: {function: field}}. Use with "
+            "run_aggregated(); the listing methods ignore it."
+        ),
+        alias=settings.AGGREGATE_PARAM_NAME,
+    )
+    having: dict[str, Any] | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description="Conditions on aggregate results, keyed by aggregate name",
+        alias=settings.HAVING_PARAM_NAME,
     )
     group_by: GroupByParam | None = Field(  # type: ignore[literal-required]
         default=None,
@@ -295,15 +309,22 @@ class Querymate(BaseModel):
         """
         return cls.from_qs(request.query_params)
 
+    def _payload(self) -> str:
+        """Serialize to the JSON that goes in the ``q`` parameter.
+
+        Unset blocks are left out rather than sent as nulls. A listing has no
+        aggregate and a filterless query has no filter; spelling that out inflates
+        every URL with the parts of the grammar the caller did not use.
+        """
+        return self.model_dump_json(by_alias=True, exclude_none=True)
+
     def to_qs(self) -> str:
         """Convert the QueryMate instance to a query string.
 
         Returns:
             str: The URL-encoded query string.
         """
-        return urlencode(
-            {settings.QUERY_PARAM_NAME: self.model_dump_json(by_alias=True)}
-        )
+        return urlencode({settings.QUERY_PARAM_NAME: self._payload()})
 
     def to_query_param(self) -> str:
         """Convert the QueryMate instance to a query string.
@@ -311,7 +332,7 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return quote(self.model_dump_json(by_alias=True))
+        return quote(self._payload())
 
     def _pagination(self, total: int) -> PaginationInfo:
         """Build a pagination dictionary from current state and total count.
@@ -579,6 +600,96 @@ class Querymate(BaseModel):
         """
         query_builder = await self._make_builder_async(model, scopes)
         return await query_builder.fetch_async(db)
+
+    # -------------------------------------------------------------------------
+    # Aggregate Query Methods
+    # -------------------------------------------------------------------------
+
+    def run_aggregated(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Compute aggregates, optionally grouped.
+
+        A separate mode with its own envelope rather than a variation of ``run()``:
+        a method that sometimes returns records and sometimes returns sums has no
+        shape a caller can rely on.
+
+        Returns:
+            dict: ``{"results": [...]}``. Each entry holds the aggregate values, plus
+            a ``key`` when grouped.
+
+        Example:
+            ```python
+            querymate = Querymate(
+                aggregate={"total": {"sum": "amount"}, "n": {"count": "*"}},
+                group_by="status",
+                having={"total": {"gt": 1000}},
+            )
+            querymate.run_aggregated(db, Order)
+            ```
+        """
+        aggregations = parse_aggregations(self.aggregate)
+        builder = self._aggregate_builder(model, scopes)
+        builder.prepare_scopes([])
+        builder.apply_filter(self.filter)
+        group_config, extractor = self._aggregate_grouping(dialect)
+        return {
+            "results": builder.aggregate(
+                db, aggregations, group_config, extractor, self.having
+            )
+        }
+
+    async def run_aggregated_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Async counterpart of :meth:`run_aggregated`."""
+        aggregations = parse_aggregations(self.aggregate)
+        builder = self._aggregate_builder(model, scopes)
+        await builder.prepare_scopes_async([])
+        builder.apply_filter(self.filter)
+        group_config, extractor = self._aggregate_grouping(dialect)
+        return {
+            "results": await builder.aggregate_async(
+                db, aggregations, group_config, extractor, self.having
+            )
+        }
+
+    def _aggregate_builder(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> QueryBuilder:
+        """Build a builder for an aggregate: no selection, only the restrictions.
+
+        An aggregate returns no records, so nothing is selected - what matters is the
+        set of rows being summarised, which the filters and the authorization scope of
+        the root model decide. The caller resolves the scopes, since only it knows
+        whether the resolvers may be awaited.
+        """
+        return QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+
+    def _aggregate_grouping(
+        self, dialect: Literal["postgresql", "sqlite"]
+    ) -> tuple[GroupByConfig | None, GroupKeyExtractor | None]:
+        """Resolve the optional group-by for an aggregate query."""
+        if self.group_by is None:
+            return None, None
+        return GroupByConfig.from_param(self.group_by), GroupKeyExtractor(
+            dialect=dialect
+        )
 
     # -------------------------------------------------------------------------
     # Grouped Query Methods

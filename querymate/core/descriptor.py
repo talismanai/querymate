@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy.orm import Mapper
 from sqlmodel import SQLModel, inspect
 
+from querymate.core.aggregate import AGGREGATE_FUNCTIONS, functions_for
 from querymate.core.config import settings
 from querymate.core.openapi import (
     ResolvedExposure,
@@ -161,6 +162,9 @@ class DescriptorBuilder:
                 "operators": (
                     operators_for(python_type) if field in exposure.filterable else []
                 ),
+                # Which aggregates apply, so a generator can type the aggregate side
+                # instead of accepting any function on any field.
+                "aggregates": functions_for(python_type),
             }
 
         mapper: Mapper = inspect(exposure.model)
@@ -213,6 +217,8 @@ class DescriptorBuilder:
                     "offset": settings.OFFSET_PARAM_NAME,
                     "group_by": settings.GROUP_BY_PARAM_NAME,
                     "join_type": settings.JOIN_TYPE_PARAM_NAME,
+                    "aggregate": settings.AGGREGATE_PARAM_NAME,
+                    "having": settings.HAVING_PARAM_NAME,
                 },
                 "limits": {
                     "default_limit": settings.DEFAULT_LIMIT,
@@ -225,6 +231,14 @@ class DescriptorBuilder:
                     "descending": settings.SORT_DESC_PREFIX,
                 },
                 "operators": operator_catalogue(),
+            },
+            "aggregates": {
+                # Aggregates answer a question about a set, so they come back under
+                # their own envelope rather than as records: a client must not expect
+                # the resource's shape here.
+                "functions": sorted(AGGREGATE_FUNCTIONS),
+                "count_all": "*",
+                "response": {"items": "results", "group_key": "key"},
             },
             "pagination": {
                 "style": "offset",

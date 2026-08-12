@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Mapper
 from sqlmodel import SQLModel, inspect
 
+from querymate.core.aggregate import functions_for
 from querymate.core.computed import (
     ComputedRegistry,
     computed_names,
@@ -455,6 +456,41 @@ def _filter_schema(exposure: ResolvedExposure) -> dict[str, Any]:
     return schema
 
 
+def _aggregate_schema(exposure: ResolvedExposure) -> dict[str, Any]:
+    """Describe the aggregates available, restricted per function to sensible types.
+
+    ``sum`` and ``avg`` over a name or a date are a mistake the schema can catch
+    before the database does, so each function advertises only the fields it applies
+    to. Every field offered is one the endpoint already exposes for reading:
+    aggregating a column discloses it.
+    """
+    per_function: dict[str, list[str]] = {"count": ["*"]}
+    for field in sorted(exposure.fields):
+        python_type = field_python_type(exposure.model, field, exposure.computed)
+        for function in functions_for(python_type):
+            per_function.setdefault(function, []).append(field)
+    return {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "properties": {
+                function: {"type": "string", "enum": fields}
+                for function, fields in per_function.items()
+                if fields
+            },
+            "additionalProperties": False,
+        },
+        "description": (
+            "Aggregates to compute, as {result name: {function: field}}. Returns one "
+            "row of totals, or one per group when combined with "
+            f"'{settings.GROUP_BY_PARAM_NAME}'."
+        ),
+    }
+
+
 def build_query_schema(
     model: type[SQLModel],
     exposed: Exposed | None = None,
@@ -538,6 +574,22 @@ def build_query_schema(
                     },
                 ],
                 "description": "Group results by a field.",
+            },
+            settings.AGGREGATE_PARAM_NAME: _aggregate_schema(exposure),
+            settings.HAVING_PARAM_NAME: {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        operator: {"description": f"{operator} on the aggregate"}
+                        for operator in operators_for(float)
+                    },
+                    "additionalProperties": False,
+                },
+                "description": (
+                    "Conditions on the aggregate results, keyed by the names declared "
+                    f"in '{settings.AGGREGATE_PARAM_NAME}'."
+                ),
             },
         },
         "additionalProperties": False,
