@@ -3,9 +3,10 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from sqlalchemy import and_, case, func
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper, joinedload, load_only, selectinload
-from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.orm.attributes import InstrumentedAttribute, set_committed_value
 from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlmodel import Session, SQLModel, inspect, select
 from sqlmodel.sql.expression import SelectOfScalar
@@ -132,6 +133,9 @@ class QueryBuilder:
         self._relationship_filters: dict[tuple[str, ...], dict[str, Any]] = {}
         # Computed fields requested at the root, selected as extra columns.
         self._computed_selected: list[str] = []
+        # Relationships needing their own ordering or page, keyed by path. These are
+        # loaded with a window function instead of an eager loader.
+        self._relationship_windows: dict[tuple[str, ...], dict[str, Any]] = {}
 
     def _models_in_select(
         self, model: type[SQLModel], fields: Sequence[NormalizedSelection]
@@ -431,6 +435,13 @@ class QueryBuilder:
                         child_filter = relationship_spec.get("filter")
                         if child_filter:
                             self._relationship_filters[relationship_path] = child_filter
+                        child_window: dict[str, Any] = {
+                            key: relationship_spec[key]
+                            for key in ("sort", "limit", "offset")
+                            if key in relationship_spec
+                        }
+                        if child_window:
+                            self._relationship_windows[relationship_path] = child_window
                     else:
                         relationship_fields = relationship_spec
 
@@ -444,6 +455,186 @@ class QueryBuilder:
         normalized: list[NormalizedSelection] = list(normalized_field_names)
         normalized.extend(cast(list[NormalizedSelection], normalized_relationships))
         return normalized
+
+    def _windowed_relationship(
+        self, model: type[SQLModel], name: str, path: tuple[str, ...]
+    ) -> RelationshipProperty | None:
+        """Return the relationship if it must be loaded with a window function.
+
+        A relationship carrying its own ``sort`` or ``limit`` cannot use an eager
+        loader: ``selectinload`` emits one query for all parents' children at once,
+        with nowhere to hang a per-parent ORDER BY or LIMIT. Those are loaded
+        separately, ranked within each parent.
+        """
+        if path not in self._relationship_windows:
+            return None
+
+        mapper: Mapper = inspect(model)
+        relationship = mapper.relationships.get(name)
+        if relationship is None or not relationship.uselist:
+            # Ordering or paging a to-one relationship is meaningless: there is at
+            # most one child.
+            raise UnknownFieldError("sort", model.__name__, [])
+        if len(path) > 1:
+            raise UnknownFieldError(
+                "limit",
+                model.__name__,
+                [],
+            )
+        if relationship.secondary is not None:
+            raise UnknownFieldError("limit", model.__name__, [])
+        return relationship
+
+    def _load_windowed_relationships(self, db: Session, parents: Sequence[Any]) -> None:
+        """Load the per-parent page of each windowed relationship and attach it."""
+        for path, options in self._relationship_windows.items():
+            plan = self._window_plan(path, options, parents)
+            if plan is None:
+                continue
+            paged_query, attach = plan
+            rows = db.exec(paged_query).all()
+            children_query = self._window_children_query(path, [row[1] for row in rows])
+            children = db.exec(children_query).unique().all() if rows else []
+            attach(rows, list(children))
+
+    async def _load_windowed_relationships_async(
+        self, db: AsyncSession, parents: Sequence[Any]
+    ) -> None:
+        """Async counterpart of :meth:`_load_windowed_relationships`."""
+        for path, options in self._relationship_windows.items():
+            plan = self._window_plan(path, options, parents)
+            if plan is None:
+                continue
+            paged_query, attach = plan
+            result = await db.execute(paged_query)
+            rows = list(result.all())
+            children: list[Any] = []
+            if rows:
+                child_result = await db.execute(
+                    self._window_children_query(path, [row[1] for row in rows])
+                )
+                children = list(child_result.unique().scalars().all())
+            attach(rows, children)
+
+    def _window_relationship_parts(
+        self, path: tuple[str, ...]
+    ) -> tuple[RelationshipProperty, type[SQLModel], Any, Any]:
+        """Resolve a windowed relationship into the pieces the queries need."""
+        name = path[0]
+        mapper: Mapper = inspect(self.model)
+        relationship = mapper.relationships[name]
+        child_model: type[SQLModel] = relationship.mapper.class_
+        # For a collection the remote side of the pair is the foreign key on the child,
+        # which is what partitions the window.
+        pairs = relationship.local_remote_pairs or []
+        _, annotated_fk = pairs[0]
+        # local_remote_pairs yields ORM-annotated columns, which make a select
+        # entity-aware and cause SQLAlchemy to append the entity's columns to the
+        # projection. The plain table columns keep the projection exactly as written.
+        table = child_model.__table__  # type: ignore[attr-defined]
+        child_fk = table.c[annotated_fk.key]
+        child_pk = table.primary_key.columns[0]
+        return relationship, child_model, child_fk, child_pk
+
+    def _window_plan(
+        self,
+        path: tuple[str, ...],
+        options: dict[str, Any],
+        parents: Sequence[Any],
+    ) -> tuple[Any, Any] | None:
+        """Build the ranking query and the function that attaches its results."""
+        if not parents:
+            return None
+
+        name = path[0]
+        relationship, child_model, child_fk, child_pk = self._window_relationship_parts(
+            path
+        )
+        parent_key = (relationship.local_remote_pairs or [])[0][0].name
+        parent_ids = [getattr(parent, parent_key) for parent in parents]
+
+        order_by = self._child_order_by(child_model, options.get("sort"))
+        row_number = (
+            func.row_number()
+            .over(partition_by=child_fk, order_by=order_by)
+            .label("qm_row_number")
+        )
+        numbered = sa_select(
+            child_fk.label("qm_parent"), child_pk.label("qm_child"), row_number
+        )
+        numbered = numbered.where(child_fk.in_(parent_ids))
+
+        scope_condition = self._scope_for(child_model)
+        if scope_condition is not None:
+            numbered = numbered.where(scope_condition)
+        child_filter = self._relationship_filters.get(path)
+        if child_filter:
+            numbered = numbered.where(
+                *FilterBuilder(child_model, computed=self.computed).build(child_filter)
+            )
+
+        windowed = numbered.subquery()
+        offset = int(options.get("offset") or 0)
+        limit = options.get("limit")
+        paged = sa_select(windowed.c["qm_parent"], windowed.c["qm_child"]).where(
+            windowed.c["qm_row_number"] > offset
+        )
+        if limit is not None:
+            paged = paged.where(windowed.c["qm_row_number"] <= offset + int(limit))
+        paged = paged.order_by(windowed.c["qm_parent"], windowed.c["qm_row_number"])
+
+        def attach(rows: Sequence[Any], children: Sequence[Any]) -> None:
+            child_pk_name = child_pk.name
+            by_id = {getattr(child, child_pk_name): child for child in children}
+            grouped: dict[Any, list[Any]] = {pid: [] for pid in parent_ids}
+            for parent_id, child_id in rows:
+                child = by_id.get(child_id)
+                if child is not None:
+                    grouped.setdefault(parent_id, []).append(child)
+            for parent in parents:
+                # set_committed_value populates the collection as if it had been
+                # loaded. A plain assignment would be a mutation, and SQLAlchemy would
+                # dutifully orphan every child left out of the page.
+                set_committed_value(
+                    parent, name, grouped.get(getattr(parent, parent_key), [])
+                )
+
+        return paged, attach
+
+    def _window_children_query(
+        self, path: tuple[str, ...], child_ids: list[Any]
+    ) -> Any:
+        """Load the ranked children by primary key, with their own nested selection."""
+        _, child_model, _, child_pk = self._window_relationship_parts(path)
+        nested_fields: list[NormalizedSelection] = []
+        for field in self.select:
+            if isinstance(field, dict) and path[0] in field:
+                nested_fields = field[path[0]]
+        return (
+            select(child_model)
+            .options(*self._loader_options(child_model, nested_fields, path))
+            .where(child_pk.in_(child_ids))
+            .execution_options(populate_existing=True)
+        )
+
+    def _child_order_by(self, child_model: type[SQLModel], sort: Any) -> list[Any]:
+        """Ordering used inside each parent's window, defaulting to the primary key."""
+        expressions: list[Any] = []
+        for entry in sort or []:
+            if not isinstance(entry, str):
+                continue
+            descending = entry.startswith("-")
+            field = entry[1:] if entry[0] in "+-" else entry
+            if field not in child_model.model_fields:
+                raise UnknownFieldError(
+                    field, child_model.__name__, list(child_model.model_fields)
+                )
+            column = getattr(child_model, field)
+            expressions.append(column.desc() if descending else column)
+        if not expressions:
+            child_mapper: Mapper = inspect(child_model)
+            expressions = [child_mapper.primary_key[0]]
+        return expressions
 
     def _relationship_attribute(
         self,
@@ -547,6 +738,11 @@ class QueryBuilder:
                     )
 
                 relationship_path = (*path, relationship_name)
+                if self._windowed_relationship(
+                    model, relationship_name, relationship_path
+                ):
+                    # Loaded separately, ranked within each parent.
+                    continue
                 attribute = self._relationship_attribute(
                     model, relationship_property, relationship_path
                 )
@@ -1029,7 +1225,10 @@ class QueryBuilder:
             serialized = query_builder.serialize(results)
             ```
         """
-        return self._entities(db.exec(self.query).unique().all())
+        entities = self._entities(db.exec(self.query).unique().all())
+        if self._relationship_windows:
+            self._load_windowed_relationships(db, entities)
+        return entities
 
     def _entities(self, rows: Sequence[Any]) -> list[Any]:
         """Turn result rows into entities, attaching any computed columns.
@@ -1133,8 +1332,12 @@ class QueryBuilder:
         """
         results = await db.execute(self.query)
         if self._computed_selected:
-            return self._entities(results.unique().all())
-        return list(results.unique().scalars().all())
+            entities = self._entities(results.unique().all())
+        else:
+            entities = list(results.unique().scalars().all())
+        if self._relationship_windows:
+            await self._load_windowed_relationships_async(db, entities)
+        return entities
 
     async def exec_async(self, db: AsyncSession) -> list[Any]:
         """Execute the query asynchronously and return its raw results.
@@ -1342,10 +1545,10 @@ class QueryBuilder:
         row_number = (
             func.row_number()
             .over(partition_by=group_expr, order_by=self._group_order_by())
-            .label("_row_number")
+            .label("qm_row_number")
         )
-        numbered = select(
-            pk_col.label("_pk"), group_expr.label("_group_key"), row_number
+        numbered = sa_select(
+            pk_col.label("qm_pk"), group_expr.label("qm_group_key"), row_number
         )
         if self.filter:
             filters = FilterBuilder(self.model, computed=self.computed).build(
@@ -1361,12 +1564,12 @@ class QueryBuilder:
 
         windowed = numbered.subquery()
         return (
-            select(windowed.c._pk, windowed.c._group_key)
+            sa_select(windowed.c["qm_pk"], windowed.c["qm_group_key"])
             .where(
-                windowed.c._row_number > offset,
-                windowed.c._row_number <= offset + limit,
+                windowed.c["qm_row_number"] > offset,
+                windowed.c["qm_row_number"] <= offset + limit,
             )
-            .order_by(windowed.c._group_key, windowed.c._row_number)
+            .order_by(windowed.c["qm_group_key"], windowed.c["qm_row_number"])
         )
 
     def _assemble_groups(
