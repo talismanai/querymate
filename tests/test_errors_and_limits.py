@@ -186,6 +186,97 @@ def test_invalid_query_is_still_a_value_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Unknown keys
+# ---------------------------------------------------------------------------
+
+
+def test_a_misspelled_key_is_refused_not_ignored() -> None:
+    """The worst possible answer to a misspelled restriction is every row.
+
+    `{"fitler": ...}` used to be dropped in silence, and the endpoint replied with
+    the unfiltered table.
+    """
+    with pytest.raises(InvalidQueryError) as raised:
+        Querymate.from_query_param('{"fitler": {"age": {"gt": 18}}}')
+
+    assert raised.value.context["key"] == "fitler"
+    assert "filter" in raised.value.context["valid_keys"]
+
+
+def test_the_error_lists_the_keys_that_do_exist() -> None:
+    with pytest.raises(InvalidQueryError) as raised:
+        Querymate.from_query_param('{"selct": ["id"]}')
+
+    assert set(raised.value.context["valid_keys"]) >= {
+        "select",
+        "filter",
+        "sort",
+        "limit",
+        "offset",
+        "cursor",
+        "aggregate",
+        "group_by",
+    }
+
+
+def test_a_value_of_the_wrong_shape_is_a_4xx_not_a_500() -> None:
+    """A ValidationError escaping the dependency reached the client as a 500."""
+    with pytest.raises(InvalidQueryError) as raised:
+        Querymate.from_query_param('{"select": "id"}')
+
+    assert raised.value.status_code == 400
+    assert raised.value.context["key"] == "select"
+
+
+def test_a_limit_over_the_maximum_is_a_4xx() -> None:
+    with pytest.raises(InvalidQueryError) as raised:
+        Querymate.from_query_param('{"limit": 100000}')
+
+    assert raised.value.status_code == 400
+
+
+def test_unknown_keys_are_refused_over_http(db: Session) -> None:
+    app = FastAPI()
+    install_exception_handler(app)
+
+    @app.get("/users")
+    def list_users(q: Querymate = Depends(Querymate.for_model(User))) -> object:
+        return q.run(db)
+
+    response = TestClient(app).get("/users", params={"q": '{"fitler": {}}'})
+
+    assert response.status_code == 400
+    assert response.json()["key"] == "fitler"
+
+
+def test_unknown_keys_are_refused_in_the_body(db: Session) -> None:
+    """Both transports, or the stricter one is only stricter by accident."""
+    app = FastAPI()
+    install_exception_handler(app)
+
+    @app.post("/users/query")
+    def search_users(q: Querymate = Depends(Querymate.body_for_model(User))) -> object:
+        return q.run(db)
+
+    response = TestClient(app).post("/users/query", json={"fitler": {}})
+
+    assert response.status_code == 400
+    assert response.json()["key"] == "fitler"
+
+
+def test_the_schema_already_said_so() -> None:
+    """Enforcement now matches the documented surface instead of being laxer."""
+    from querymate.core.openapi import build_query_schema
+
+    assert build_query_schema(User)["additionalProperties"] is False
+
+
+def test_field_names_still_work_in_the_constructor() -> None:
+    """Constructing in Python uses field names, whatever the wire calls them."""
+    assert Querymate(select=["id"], limit=5).limit == 5
+
+
+# ---------------------------------------------------------------------------
 # HTTP contract
 # ---------------------------------------------------------------------------
 

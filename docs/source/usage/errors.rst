@@ -90,3 +90,30 @@ directly.
 ``limit=0`` returns an empty list - useful for fetching only the ``total`` from a
 paginated response. It previously read as "no limit" and returned everything, which is
 the opposite of what was asked.
+
+Unknown Keys
+------------
+
+A key the grammar does not define is refused, not ignored:
+
+.. code-block:: text
+
+    /users?q={"fitler":{"age":{"gt":18}}}
+
+.. code-block:: json
+
+    {
+      "error": "InvalidQueryError",
+      "detail": "Unknown key 'fitler' in the query.",
+      "key": "fitler",
+      "valid_keys": ["aggregate", "cursor", "filter", "group_by", "having",
+                     "join_type", "limit", "offset", "select", "sort", "with_total"]
+    }
+
+Dropping it silently would have been the worst possible answer to a misspelled
+restriction: the endpoint replies with the whole table. This also makes the runtime
+agree with the generated schema, which has always said ``additionalProperties: false``.
+
+A value of the wrong shape — ``{"select": "id"}``, ``{"limit": 100000}`` — is reported
+the same way, as a 400 naming the key. Previously the underlying validation error
+escaped the dependency and reached the client as a 500.

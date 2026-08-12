@@ -6,7 +6,14 @@ from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Body, Query, Request
 from fastapi.datastructures import QueryParams
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, RootModel
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    RootModel,
+    ValidationError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
@@ -74,6 +81,42 @@ def _query_body_model(
     )
 
 
+# Every key the grammar accepts, so a rejected one can be answered with the list. Read
+# off the settings rather than written out, since an installation may rename them.
+_QUERY_KEYS = (
+    settings.SELECT_PARAM_NAME,
+    settings.FILTER_PARAM_NAME,
+    settings.SORT_PARAM_NAME,
+    settings.LIMIT_PARAM_NAME,
+    settings.OFFSET_PARAM_NAME,
+    settings.CURSOR_PARAM_NAME,
+    settings.WITH_TOTAL_PARAM_NAME,
+    settings.AGGREGATE_PARAM_NAME,
+    settings.HAVING_PARAM_NAME,
+    settings.GROUP_BY_PARAM_NAME,
+    settings.JOIN_TYPE_PARAM_NAME,
+)
+
+
+def _invalid_query(error: ValidationError) -> InvalidQueryError:
+    """Turn a validation failure into an error that names the offending key.
+
+    Pydantic's own message is a list of dicts about ``loc`` and ``input``; a client
+    that sent ``fitler`` needs to be told that word, and which words exist.
+    """
+    for detail in error.errors():
+        location = detail.get("loc") or ()
+        key = ".".join(str(part) for part in location) or "query"
+        if detail.get("type") == "extra_forbidden":
+            return InvalidQueryError(
+                f"Unknown key '{key}' in the query.",
+                key=key,
+                valid_keys=sorted(_QUERY_KEYS),
+            )
+        return InvalidQueryError(f"Invalid query: {key}: {detail.get('msg')}", key=key)
+    return InvalidQueryError("Invalid query.")
+
+
 # Type aliases for better readability
 FilterCondition = dict[str, Any]
 GroupByParam = str | dict[str, Any]
@@ -128,7 +171,12 @@ class Querymate(BaseModel):
         ```
     """
 
-    model_config = ConfigDict(extra="ignore")
+    # An unknown key is a mistake, and dropping it silently turns that mistake into a
+    # wrong answer: {"fitler": {...}} used to return every row. Forbidding it also
+    # makes the runtime agree with the schema, which already says
+    # additionalProperties: false. populate_by_name keeps the Python constructor
+    # working with field names when an installation renames a parameter.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     select: list[FieldSelection] | None = Field(  # type: ignore[literal-required]
         default=[],
@@ -255,14 +303,33 @@ class Querymate(BaseModel):
         ``from_query_param`` let a raw JSONDecodeError escape as a 500.
 
         Raises:
-            InvalidQueryError: If ``raw`` is not valid JSON.
+            InvalidQueryError: If ``raw`` is not valid JSON, or is not a valid query.
         """
         try:
-            return cls.model_validate(json.loads(raw))
+            decoded = json.loads(raw)
         except json.JSONDecodeError as e:
             raise InvalidQueryError(
                 "Invalid JSON in query parameter", parameter=settings.QUERY_PARAM_NAME
             ) from e
+        return cls.validate_query(decoded)
+
+    @classmethod
+    def validate_query(cls, data: Any) -> "Querymate":
+        """Validate a decoded query, reporting an unknown key rather than dropping it.
+
+        Unknown keys are refused, not ignored. A typo in ``filter`` used to be
+        discarded in silence and the endpoint answered with every row - the worst
+        possible response to a misspelled restriction. The same rule the generated
+        schema already advertises (``additionalProperties: false``) now holds at
+        runtime.
+
+        Raises:
+            InvalidQueryError: If the document is not a valid query.
+        """
+        try:
+            return cls.model_validate(data)
+        except ValidationError as error:
+            raise _invalid_query(error) from error
 
     @classmethod
     def for_model(
@@ -397,7 +464,7 @@ class Querymate(BaseModel):
                 Body(description=description, openapi_examples=examples),
             ],
         ) -> Querymate:
-            instance = cls.model_validate(body.root)  # type: ignore[attr-defined]
+            instance = cls.validate_query(body.root)  # type: ignore[attr-defined]
             instance._bound_model = model
             instance._exposure = resolve_exposure(
                 model, exposed, max_depth, resources, computed
