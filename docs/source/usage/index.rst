@@ -6,12 +6,19 @@ This guide covers the main features and usage patterns of QueryMate.
 .. toctree::
    :maxdepth: 2
 
+   models
    filtering
    sorting
    pagination
    grouping
+   aggregation
    field_selection
    relationships
+   authorization
+   openapi
+   descriptor
+   caching
+   errors
    serialization
    predicates
 
@@ -80,8 +87,13 @@ QueryMate accepts query parameters in JSON format through the ``q`` parameter. T
         "offset": 0,
         "select": ["field1", "field2", {"relationship": ["field1", "field2"]}],
         "group_by": "status",
-        "join_type": "left"
+        "join_type": "left",
+        "aggregate": {"n": {"count": "*"}},
+        "having": {"n": {"gt": 1}}
     }
+
+``aggregate`` and ``having`` are read by ``run_aggregated`` only; the listing methods
+ignore them.
 
 The ``join_type`` parameter controls how relationships are joined:
 

@@ -3,19 +3,48 @@
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
+from typing_extensions import TypeAliasType
 
 T = TypeVar("T")
 
+# A selected field is either a column name or a relationship mapped to its own
+# selection. A relationship's value is normally a list of fields, and may instead be
+# {"select": [...], "filter": {...}} to also restrict which children are loaded.
+#
+# The alias is recursive because a relationship's selection may itself contain
+# relationships - the non-recursive `dict[str, list[str]]` this replaced contradicted
+# the documented support for nested selections. TypeAliasType (rather than a plain
+# alias with a forward reference) is what lets Pydantic build a schema for a recursive
+# type instead of recursing forever.
+FieldSelection = TypeAliasType(
+    "FieldSelection",
+    "str | dict[str, list[FieldSelection] | dict[str, Any]]",
+)
+
+# What a selection looks like after normalization: wildcards expanded and the
+# {"select": ..., "filter": ...} form reduced to a plain field list, with the filter
+# moved aside. Everything downstream of normalization works with this narrower shape.
+NormalizedSelection = TypeAliasType(
+    "NormalizedSelection", "str | dict[str, list[NormalizedSelection]]"
+)
+
 
 class PaginationInfo(BaseModel):
-    """Pagination metadata for query results."""
+    """Pagination metadata for query results.
 
-    total: int
+    ``total`` and ``pages`` are absent when the caller asked not to count
+    (``"count": "none"``). ``has_next_page`` is not: it is always known, either from
+    the total or from one probe row, and a client that cannot tell "no more pages"
+    from "we did not check" has been told something false rather than nothing.
+    """
+
+    total: int | None = None
     page: int
     size: int
-    pages: int
+    pages: int | None = None
     previous_page: int | None = None
     next_page: int | None = None
+    has_next_page: bool | None = None
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
@@ -23,6 +52,23 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
     items: list[T]
     pagination: PaginationInfo
+
+
+class CursorInfo(BaseModel):
+    """Where a cursor page sits in the sequence."""
+
+    next: str | None = None
+    has_more: bool = False
+    # Present only when the caller asked for it with "count": "exact". Counting the
+    # whole set is the work a cursor exists to avoid, so it is never done implicitly.
+    total: int | None = None
+
+
+class CursorPage(BaseModel, Generic[T]):
+    """A page located by cursor rather than by offset."""
+
+    items: list[T]
+    cursor: CursorInfo
 
 
 # Type alias for flexible response that can be either paginated or just items

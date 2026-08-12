@@ -34,14 +34,24 @@ class QueryMateSettings(BaseSettings):
         default="offset", description="Offset parameter name"
     )
 
-    # Pagination response defaults
-    DEFAULT_RETURN_PAGINATION: bool = Field(
-        default=False,
-        description="Default behavior for returning pagination metadata",
+    # Cursor pagination
+    CURSOR_PARAM_NAME: str = Field(
+        default="cursor", description="Cursor parameter name"
     )
-    PAGINATION_PARAM_NAME: str = Field(
-        default="include_pagination",
-        description="Query parameter name for pagination metadata",
+    COUNT_PARAM_NAME: str = Field(
+        default="count",
+        description=(
+            "Name of the parameter deciding whether the total is computed. A count is "
+            "a second pass over the filtered set, and not every page needs one."
+        ),
+    )
+
+    # Aggregation
+    AGGREGATE_PARAM_NAME: str = Field(
+        default="aggregate", description="Aggregate parameter name"
+    )
+    HAVING_PARAM_NAME: str = Field(
+        default="having", description="Aggregate condition parameter name"
     )
 
     # Logging configuration
@@ -123,6 +133,18 @@ class QueryMateSettings(BaseSettings):
     SORT_ASC_PREFIX: str = Field(default="+", description="Prefix for ascending sort")
 
     # Field selection
+    MAX_SELECT_DEPTH: int = Field(
+        default=5,
+        description=(
+            "Maximum relationship nesting depth in a selection. Each level costs a "
+            "query, so an unbounded depth lets one request be made arbitrarily "
+            "expensive."
+        ),
+    )
+    MAX_SELECT_NODES: int = Field(
+        default=200,
+        description="Maximum number of fields and relationships in one selection",
+    )
     INCLUDE_PRIMARY_KEYS: bool = Field(
         default=True, description="Always include primary keys"
     )
@@ -141,7 +163,8 @@ class QueryMateSettings(BaseSettings):
 
     # Join type configuration
     JOIN_TYPE_PARAM_NAME: str = Field(
-        default="join_type", description="Join type parameter name for relationship queries"
+        default="join_type",
+        description="Join type parameter name for relationship queries",
     )
     DEFAULT_JOIN_TYPE: str = Field(
         default="inner",

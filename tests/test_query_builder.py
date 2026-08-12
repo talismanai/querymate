@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
-from sqlmodel import Session, SQLModel, create_engine, desc, select
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
+from querymate.core.config import settings
 from querymate.core.query_builder import QueryBuilder
 from tests.models import Post, User
 
@@ -63,112 +64,116 @@ async def async_db(async_engine: Any) -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+# These used to compare the compiled SQL against a hand-built flat SELECT with a
+# JOIN. That pinned the old engine's shape rather than its contract, so the tests
+# broke the moment relationships moved to native eager loading even though behaviour
+# was correct. They now assert what a caller actually observes.
+
+
+def _seed_two_users_with_posts(db: Session) -> None:
+    john = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
+    jane = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25)
+    db.add(john)
+    db.add(jane)
+    db.add(Post(id=1, title="Post 1", content="Content 1", user_id=1))
+    db.add(Post(id=2, title="Post 2", content="Content 2", user_id=2))
+    db.commit()
+
+
 # ================================
 # Test cases for select
 # ================================
-def test_select() -> None:
+def test_select(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
-    expected_query = select(User.id, User.name, Post.id, Post.title).join(Post)
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.serialize(query_builder.fetch(db, User))
+
+    assert results == [
+        {"id": 1, "name": "John", "posts": [{"id": 1, "title": "Post 1"}]},
+        {"id": 2, "name": "Jane", "posts": [{"id": 2, "title": "Post 2"}]},
+    ]
 
 
-def test_select_with_duplicated_fields() -> None:
+def test_select_with_duplicated_fields(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", "name", {"posts": ["id", "title", "id"]}])
-    expected_query = select(User.id, User.name, Post.id, Post.title).join(Post)
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.serialize(query_builder.fetch(db, User))
+
+    assert results == [
+        {"id": 1, "name": "John", "posts": [{"id": 1, "title": "Post 1"}]},
+        {"id": 2, "name": "Jane", "posts": [{"id": 2, "title": "Post 2"}]},
+    ]
 
 
-def test_select_with_asterisk() -> None:
+def test_select_with_asterisk(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["*", {"posts": ["*"]}])
+    results = query_builder.serialize(query_builder.fetch(db, User))
 
-    # Get all field names from the models dynamically
-    user_fields = set(User.model_fields.keys())
-    post_fields = set(Post.model_fields.keys())
-
-    # Check that both queries have the same compiled structure
-    actual_sql = str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    )
-
-    # Verify that the query includes all expected fields
-    for field in user_fields:
-        assert (
-            f'"user".{field}' in actual_sql
-            or f'"user".{field}' in actual_sql.replace('"', "")
-        ), f"Missing User field: {field}"
-    for field in post_fields:
-        # Handle aliased fields (when field names conflict)
-        assert f"post.{field}" in actual_sql or f"{field}" in actual_sql, (
-            f"Missing Post field: {field}"
-        )
-
-    # Verify JOIN clause is present
-    assert "JOIN post ON" in actual_sql
+    assert set(results[0]) == set(User.model_fields.keys()) | {"posts"}
+    assert set(results[0]["posts"][0]) == set(Post.model_fields.keys())
 
 
-def test_select_with_asterisk_and_duplicated_fields() -> None:
+def test_select_with_asterisk_and_duplicated_fields(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["*", "id", "name", {"posts": ["id", "*", "title"]}])
+    results = query_builder.serialize(query_builder.fetch(db, User))
 
-    # Get all field names from the models dynamically
-    user_fields = set(User.model_fields.keys())
-    post_fields = set(Post.model_fields.keys())
+    assert set(results[0]) == set(User.model_fields.keys()) | {"posts"}
+    assert set(results[0]["posts"][0]) == set(Post.model_fields.keys())
 
-    # Check that the query includes all expected fields
-    actual_sql = str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    )
 
-    # Verify that the query includes all expected fields
-    for field in user_fields:
-        assert (
-            f'"user".{field}' in actual_sql
-            or f'"user".{field}' in actual_sql.replace('"', "")
-        ), f"Missing User field: {field}"
-    for field in post_fields:
-        # Handle aliased fields (when field names conflict)
-        assert f"post.{field}" in actual_sql or f"{field}" in actual_sql, (
-            f"Missing Post field: {field}"
-        )
+def test_select_only_loads_requested_columns(db: Session) -> None:
+    """Sparse field selection must reach the SQL, not just the serializer."""
+    _seed_two_users_with_posts(db)
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"])
 
-    # Verify JOIN clause is present
-    assert "JOIN post ON" in actual_sql
+    compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
+    assert '"user".name' in compiled
+    assert '"user".email' not in compiled
 
 
 # ================================
 # Test cases for filter
 # ================================
-def test_filter() -> None:
+def test_filter(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_filter({"age": {"gt": 25}})
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).where(User.age > 25).join(Post)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["John"]
 
 
-def test_filter_with_nested_fields() -> None:
+def test_filter_with_nested_fields(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
+    query_builder.apply_filter({"posts.title": {"cont": "Post 2"}})
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["Jane"]
+
+
+def test_relationship_filter_compiles_to_exists(db: Session) -> None:
+    """A relationship condition must not depend on a join being present.
+
+    EXISTS is what lets the same filter work when the relationship is not selected
+    and inside COUNT, and keeps it from multiplying rows.
+    """
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"])
     query_builder.apply_filter({"posts.title": {"cont": "Python"}})
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title)
-        .where(Post.title.contains("Python"))  # type: ignore
-        .join(Post)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+    compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
+    assert "EXISTS" in compiled
+    assert "JOIN" not in compiled
 
 
 def test_filter_combines_ne_and_gt() -> None:
@@ -185,20 +190,16 @@ def test_filter_combines_ne_and_gt() -> None:
     ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
 
 
-def test_filter_combines_ne_with_relationship_filter() -> None:
+def test_filter_combines_ne_with_relationship_filter(db: Session) -> None:
     """Combine NE on root field with a relationship filter."""
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}]).apply_filter(
         {"posts.title": {"cont": "Post"}, "name": {"ne": "John"}}
     )
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title)
-        .where(Post.title.contains("Post"), User.name != "John")  # type: ignore
-        .join(Post)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["Jane"]
 
 
 def test_filter_with_or_same_property() -> None:
@@ -236,44 +237,59 @@ def test_filter_with_and_or_multiple_properties() -> None:
 # ================================
 # Test cases for sort
 # ================================
-def test_sort() -> None:
+def test_sort(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_sort(["-age"])
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title)
-        .join(Post)
-        .order_by(desc(User.age))
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["John", "Jane"]
 
 
-def test_sort_expliscit_asc() -> None:
+def test_sort_expliscit_asc(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_sort(["+age"])
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).join(Post).order_by(User.age)  # type: ignore
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["Jane", "John"]
 
 
-def test_sort_with_nested_fields() -> None:
+def test_sort_with_nested_fields(db: Session) -> None:
+    """Sorting by a related field orders the parents, without duplicating them."""
+    john = User(id=1, name="John", is_active=True, email="john@example.com", age=30)
+    jane = User(id=2, name="Jane", is_active=True, email="jane@example.com", age=25)
+    db.add(john)
+    db.add(jane)
+    db.add(Post(id=1, title="Alpha", content="c", user_id=1))
+    db.add(Post(id=2, title="Zulu", content="c", user_id=1))
+    db.add(Post(id=3, title="Mike", content="c", user_id=2))
+    db.commit()
+
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_sort(["-posts.title"])
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title)
-        .join(Post)
-        .order_by(desc(Post.title))
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    results = query_builder.fetch(db, User)
+
+    # John's highest title is "Zulu", Jane's is "Mike", so John sorts first.
+    assert [u.name for u in results] == ["John", "Jane"]
+
+
+def test_sort_by_related_field_does_not_multiply_rows(db: Session) -> None:
+    """A join would repeat a parent once per child; the correlated subquery does not."""
+    db.add(User(id=1, name="John", is_active=True, email="j@example.com", age=30))
+    db.add(Post(id=1, title="Alpha", content="c", user_id=1))
+    db.add(Post(id=2, title="Zulu", content="c", user_id=1))
+    db.commit()
+
+    query_builder = QueryBuilder(model=User)
+    query_builder.apply_select(["id", "name"])
+    query_builder.apply_sort(["posts.title"])
+    results = query_builder.fetch(db, User)
+
+    assert len(results) == 1
 
 
 def test_sort_with_invalid_nested_field() -> None:
@@ -295,16 +311,16 @@ def test_sort_with_invalid_relationship() -> None:
 # ================================
 # Test cases for limit
 # ================================
-def test_limit() -> None:
+def test_limit(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
-    query_builder.apply_limit(10)
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).join(Post).limit(10)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    query_builder.apply_limit(1)
+    results = query_builder.fetch(db, User)
+
+    # One root record, not one joined row.
+    assert len(results) == 1
+    assert query_builder.limit == 1
 
 
 def test_sort_with_custom_value_order() -> None:
@@ -328,39 +344,30 @@ def test_limit_with_negative_value() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_limit(-10)
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).join(Post).limit(10)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+    assert query_builder.limit == settings.DEFAULT_LIMIT
 
 
 # ================================
 # Test cases for offset
 # ================================
-def test_offset() -> None:
+def test_offset(db: Session) -> None:
+    _seed_two_users_with_posts(db)
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
-    query_builder.apply_offset(10)
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).join(Post).offset(10)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+    query_builder.apply_offset(1)
+    results = query_builder.fetch(db, User)
+
+    assert [u.name for u in results] == ["Jane"]
+    assert query_builder.offset == 1
 
 
 def test_offset_with_negative_value() -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     query_builder.apply_offset(-10)
-    expected_query = (
-        select(User.id, User.name, Post.id, Post.title).join(Post).offset(0)
-    )
-    assert str(
-        query_builder.query.compile(compile_kwargs={"literal_binds": True})
-    ) == str(expected_query.compile(compile_kwargs={"literal_binds": True}))
+
+    assert query_builder.offset == settings.DEFAULT_OFFSET
 
 
 # ================================
@@ -394,10 +401,11 @@ def test_exec(db: Session) -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     results = query_builder.exec(db)
-    assert results == [
-        (1, "John", 1, "Post 1"),
-        (2, "Jane", 2, "Post 2"),
-    ]
+
+    # The query selects entities now, not a flat tuple of columns, so exec returns
+    # model instances with their relationships already loaded.
+    assert [u.name for u in results] == ["John", "Jane"]
+    assert [p.title for p in results[0].posts] == ["Post 1"]
 
 
 # ================================
@@ -482,7 +490,7 @@ def test_query_builder_filter_with_nested_fields() -> None:
 
     # The query should include a join with the posts table
     compiled_query = str(query.compile(compile_kwargs={"literal_binds": True}))
-    assert "JOIN post" in compiled_query
+    assert "EXISTS" in compiled_query
     assert "post.title LIKE '%' || 'Python' || '%'" in compiled_query
 
 
@@ -496,7 +504,7 @@ def test_query_builder_filter_with_multiple_nested_fields() -> None:
     query = builder.query
 
     compiled_query = str(query.compile(compile_kwargs={"literal_binds": True}))
-    assert "JOIN post" in compiled_query
+    assert "EXISTS" in compiled_query
     assert "post.title LIKE '%' || 'Python' || '%'" in compiled_query
     assert "post.content LIKE '%' || 'tutorial' || '%'" in compiled_query
 
@@ -509,7 +517,7 @@ def test_query_builder_filter_with_direct_and_nested_fields() -> None:
     query = builder.query
 
     compiled_query = str(query.compile(compile_kwargs={"literal_binds": True}))
-    assert "JOIN post" in compiled_query
+    assert "EXISTS" in compiled_query
     assert '"user".age > 18' in compiled_query
     assert "post.title LIKE '%' || 'Python' || '%'" in compiled_query
 
@@ -527,33 +535,37 @@ def test_query_builder_filter_with_multiple_operators() -> None:
     query = builder.query
 
     compiled_query = str(query.compile(compile_kwargs={"literal_binds": True}))
-    assert "JOIN post" in compiled_query
+    assert "EXISTS" in compiled_query
     assert '"user".age > 18' in compiled_query
     assert '"user".age < 30' in compiled_query
     assert "post.title LIKE '%' || 'Python' || '%'" in compiled_query
     assert "post.title LIKE 'Learn' || '%'" in compiled_query
 
 
+# These used to poke the private _select helper, which the eager-loading engine
+# replaced. Asserting through apply_select keeps the same contracts under test
+# without depending on an internal that no longer exists.
+
+
 def test_select_with_invalid_field() -> None:
-    """Test _select method with invalid field."""
+    """An unknown field is refused rather than quietly omitted from the response."""
     builder = QueryBuilder(User)
     with pytest.raises(AttributeError):
-        builder._select(User, ["invalid_field"])
+        builder.apply_select(["invalid_field"])
 
 
 def test_select_with_invalid_relationship() -> None:
-    """Test _select method with invalid relationship."""
+    """An unknown relationship is refused, like an unknown field."""
     builder = QueryBuilder(User)
-    result = builder._select(User, [{"invalid_relationship": ["field"]}])
-    assert len(result[0]) == 0
-    assert len(result[1]) == 0
+    with pytest.raises(AttributeError, match="invalid_relationship"):
+        builder.apply_select(["id", {"invalid_relationship": ["field"]}])
 
 
 def test_select_with_invalid_relationship_fields() -> None:
-    """Test _select method with invalid relationship fields."""
+    """An unknown field inside a relationship is refused too."""
     builder = QueryBuilder(User)
     with pytest.raises(AttributeError):
-        builder._select(User, [{"posts": ["invalid_field"]}])
+        builder.apply_select(["id", {"posts": ["invalid_field"]}])
 
 
 def test_build_with_invalid_select() -> None:
@@ -591,18 +603,16 @@ def test_build_with_invalid_offset() -> None:
     assert result is not None
 
 
-def test_reconstruct_objects_with_empty_results() -> None:
-    """Test reconstruct_objects method with empty results."""
-    builder = QueryBuilder(User)
-    result = builder.reconstruct_objects([], User)
-    assert result == []
+# reconstruct_objects / reconstruct_object were deleted with the flat-JOIN engine:
+# the ORM now returns model instances directly, so there is nothing to rebuild by
+# hand. An empty result set is still worth pinning.
 
 
-def test_reconstruct_object_with_invalid_relationship() -> None:
-    """Test reconstruct_object with invalid relationship."""
+def test_fetch_with_no_matching_records(db: Session) -> None:
     builder = QueryBuilder(User)
-    with pytest.raises(KeyError):
-        builder.reconstruct_object(User, [{"invalid_relationship": ["field"]}], (), [0])
+    builder.apply_select(["id", "name"])
+
+    assert builder.fetch(db, User) == []
 
 
 def test_relationship_types(db: Session) -> None:
@@ -671,10 +681,9 @@ async def test_exec_async(async_db: AsyncSession) -> None:
     query_builder = QueryBuilder(model=User)
     query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}])
     results = await query_builder.exec_async(async_db)
-    assert results == [
-        (1, "John", 1, "Post 1"),
-        (2, "Jane", 2, "Post 2"),
-    ]
+
+    # Entities rather than flat column tuples, matching the sync exec().
+    assert [row[0].name for row in results] == ["John", "Jane"]
 
 
 # ================================
@@ -915,32 +924,42 @@ async def test_serialize_with_non_list_relationships_async(
 # ================================
 # Test cases for join_type parameter
 # ================================
+# join_type keeps its public meaning - "inner" drops parents without children - but
+# is now expressed as EXISTS instead of a SQL join, so these assert the restriction
+# rather than the join keyword.
+
+
 def test_apply_select_join_type_inner() -> None:
-    """Test apply_select with inner join type generates correct SQL."""
+    """Inner restricts to parents that have children, via EXISTS."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="inner")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="inner"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
-    assert "JOIN post ON" in compiled
-    assert "LEFT OUTER JOIN" not in compiled
+    assert "EXISTS" in compiled
 
 
 def test_apply_select_join_type_left() -> None:
-    """Test apply_select with left join type generates correct SQL."""
+    """Left applies no restriction, so parents without children survive."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
-    assert "LEFT OUTER JOIN post ON" in compiled
+    assert "EXISTS" not in compiled
 
 
 def test_apply_select_join_type_outer() -> None:
-    """Test apply_select with outer join type generates correct SQL (same as left)."""
+    """Outer is an alias of left."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="outer")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="outer"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
-    assert "LEFT OUTER JOIN post ON" in compiled
+    assert "EXISTS" not in compiled
 
 
 def test_build_with_join_type() -> None:
@@ -952,7 +971,7 @@ def test_build_with_join_type() -> None:
     )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
-    assert "LEFT OUTER JOIN post ON" in compiled
+    assert "EXISTS" not in compiled
 
 
 def test_join_type_inner_excludes_records_without_relationships(db: Session) -> None:
@@ -971,7 +990,9 @@ def test_join_type_inner_excludes_records_without_relationships(db: Session) -> 
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="inner")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="inner"
+    )
     results = query_builder.fetch(db, User)
 
     assert len(results) == 1
@@ -994,7 +1015,9 @@ def test_join_type_left_includes_records_without_relationships(db: Session) -> N
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = query_builder.fetch(db, User)
 
     assert len(results) == 2
@@ -1018,7 +1041,9 @@ def test_join_type_left_serialization_empty_list(db: Session) -> None:
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = query_builder.fetch(db, User)
     serialized = query_builder.serialize(results)
 
@@ -1050,7 +1075,9 @@ async def test_join_type_left_async(async_db: AsyncSession) -> None:
     await async_db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = await query_builder.fetch_async(async_db, User)
 
     assert len(results) == 2

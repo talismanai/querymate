@@ -1,31 +1,133 @@
 import json
-from typing import Any, Literal, TypeVar
+from collections.abc import Callable
+from types import new_class
+from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode
 
-from fastapi import Request
+from fastapi import Body, Query, Request
 from fastapi.datastructures import QueryParams
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    RootModel,
+    ValidationError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import Session, SQLModel
+from sqlalchemy.orm import Session
 
+from querymate.core.aggregate import parse_aggregations
+from querymate.core.compat import ModelClass
+from querymate.core.computed import ComputedRegistry
 from querymate.core.config import settings
+from querymate.core.exceptions import InvalidQueryError
 from querymate.core.grouping import (
     GroupByConfig,
     GroupedResponse,
     GroupKeyExtractor,
     GroupResult,
 )
+from querymate.core.openapi import (
+    Exposed,
+    ResolvedExposure,
+    ResourceRegistry,
+    build_query_examples,
+    build_query_schema,
+    describe_query,
+    resolve_exposure,
+)
+from querymate.core.plan import QueryPlan, build_plan
 from querymate.core.query_builder import JoinType, QueryBuilder
-from querymate.types import PaginatedResponse, PaginationInfo
+from querymate.core.scope import BoundScopes
+from querymate.types import (
+    CursorInfo,
+    CursorPage,
+    FieldSelection,
+    PaginatedResponse,
+    PaginationInfo,
+)
 
-T = TypeVar("T", bound=SQLModel)
+# Unbound: the engine works with SQLModel table classes and plain SQLAlchemy
+# declarative models alike, and a bound of SQLModel would reject half of that in a
+# type checker while the runtime accepted it.
+T = TypeVar("T")
 R = TypeVar("R")
 
 
+def _query_body_model(
+    model: ModelClass, schema: dict[str, Any]
+) -> type[RootModel[dict[str, Any]]]:
+    """Wrap the query grammar in a body model carrying its generated schema.
+
+    The body is the ``q`` object itself, not an envelope around it, so the two
+    transports accept exactly the same document. A RootModel says that, and
+    overriding the JSON Schema puts the per-model grammar - fields, operators,
+    relationships - into the OpenAPI request body rather than a bare ``object``.
+    """
+
+    def json_schema(cls: Any, core_schema: Any, handler: Any) -> Any:
+        return schema
+
+    def body(namespace: dict[str, Any]) -> None:
+        namespace["__module__"] = __name__
+        namespace["__get_pydantic_json_schema__"] = classmethod(json_schema)
+
+    # Built by name rather than declared, because the OpenAPI component is named after
+    # the class and two resources would otherwise both be called "QueryBody".
+    return cast(
+        type[RootModel[dict[str, Any]]],
+        new_class(
+            f"{model.__name__}QueryBody",
+            (RootModel[dict[str, Any]],),
+            exec_body=body,
+        ),
+    )
+
+
+# Every key the grammar accepts, so a rejected one can be answered with the list. Read
+# off the settings rather than written out, since an installation may rename them.
+_QUERY_KEYS = (
+    settings.SELECT_PARAM_NAME,
+    settings.FILTER_PARAM_NAME,
+    settings.SORT_PARAM_NAME,
+    settings.LIMIT_PARAM_NAME,
+    settings.OFFSET_PARAM_NAME,
+    settings.CURSOR_PARAM_NAME,
+    settings.COUNT_PARAM_NAME,
+    settings.AGGREGATE_PARAM_NAME,
+    settings.HAVING_PARAM_NAME,
+    settings.GROUP_BY_PARAM_NAME,
+    settings.JOIN_TYPE_PARAM_NAME,
+)
+
+
+def _invalid_query(error: ValidationError) -> InvalidQueryError:
+    """Turn a validation failure into an error that names the offending key.
+
+    Pydantic's own message is a list of dicts about ``loc`` and ``input``; a client
+    that sent ``fitler`` needs to be told that word, and which words exist.
+    """
+    # A ValidationError always carries at least one error, and the first is the one
+    # worth reporting: a client fixes them one at a time anyway.
+    detail = error.errors()[0]
+    location = detail.get("loc") or ()
+    key = ".".join(str(part) for part in location) or "query"
+    if detail.get("type") == "extra_forbidden":
+        return InvalidQueryError(
+            f"Unknown key '{key}' in the query.",
+            key=key,
+            valid_keys=sorted(_QUERY_KEYS),
+        )
+    return InvalidQueryError(f"Invalid query: {key}: {detail.get('msg')}", key=key)
+
+
 # Type aliases for better readability
-FieldSelection = str | dict[str, list[str]]
 FilterCondition = dict[str, Any]
 GroupByParam = str | dict[str, Any]
+# Whether the total is computed. A count is a second pass over the filtered set; a
+# page-numbered UI needs it and an infinite scroll does not.
+CountMode = Literal["exact", "none"]
 
 
 class Querymate(BaseModel):
@@ -42,8 +144,10 @@ class Querymate(BaseModel):
         sort (list[str] | None): List of fields to sort by. Prefix with "-" for descending order. Default is [].
         limit (int | None): Maximum number of records to return. Default is 10, max is 200.
         offset (int | None): Number of records to skip. Default is 0.
-        join_type (JoinType | None): Type of join for relationship queries. Options: 'inner' (default),
-            'left', 'outer'. Use 'left' or 'outer' to include parent records even when no children exist.
+        join_type (JoinType | None): How selected relationships restrict the result.
+            Options: 'inner' (default), 'left', 'outer'. Use 'left' or 'outer' to include
+            parent records even when no children exist. Applied as an EXISTS restriction;
+            relationships themselves are loaded with eager loaders, not joins.
 
     Serialization:
         The Querymate class includes built-in serialization capabilities through the `run` and `run_async` methods.
@@ -75,7 +179,12 @@ class Querymate(BaseModel):
         ```
     """
 
-    model_config = ConfigDict(extra="ignore")
+    # An unknown key is a mistake, and dropping it silently turns that mistake into a
+    # wrong answer: {"fitler": {...}} used to return every row. Forbidding it also
+    # makes the runtime agree with the schema, which already says
+    # additionalProperties: false. populate_by_name keeps the Python constructor
+    # working with field names when an installation renames a parameter.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     select: list[FieldSelection] | None = Field(  # type: ignore[literal-required]
         default=[],
@@ -105,10 +214,36 @@ class Querymate(BaseModel):
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
     )
-    include_pagination: bool = Field(  # type: ignore[literal-required]
-        default=settings.DEFAULT_RETURN_PAGINATION,
-        description="Include pagination metadata in response",
-        alias=settings.PAGINATION_PARAM_NAME,
+    cursor: str | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Opaque marker of the last record of the previous page. Use with "
+            "run_cursor_paginated(); pass the 'next' value back verbatim."
+        ),
+        alias=settings.CURSOR_PARAM_NAME,
+    )
+    count: CountMode | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Whether to compute the total. 'exact' runs a count query; 'none' skips "
+            "it and reports has_next_page from one probe row instead. Defaults to "
+            "'exact' for offset pages and 'none' for cursor pages, which is what each "
+            "style is for."
+        ),
+        alias=settings.COUNT_PARAM_NAME,
+    )
+    aggregate: dict[str, Any] | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Aggregates to compute, as {name: {function: field}}. Use with "
+            "run_aggregated(); the listing methods ignore it."
+        ),
+        alias=settings.AGGREGATE_PARAM_NAME,
+    )
+    having: dict[str, Any] | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description="Conditions on aggregate results, keyed by aggregate name",
+        alias=settings.HAVING_PARAM_NAME,
     )
     group_by: GroupByParam | None = Field(  # type: ignore[literal-required]
         default=None,
@@ -121,6 +256,21 @@ class Querymate(BaseModel):
         alias=settings.JOIN_TYPE_PARAM_NAME,
     )
 
+    # Set by for_model(): the model this query targets and the surface it may use.
+    _bound_model: ModelClass | None = PrivateAttr(default=None)
+    _exposure: ResolvedExposure | None = PrivateAttr(default=None)
+    _computed: ComputedRegistry | None = PrivateAttr(default=None)
+
+    def _resolve_model(self, model: type[T] | None) -> type[T]:
+        """Return the model to query, falling back to the one bound by for_model()."""
+        resolved = model if model is not None else self._bound_model
+        if resolved is None:
+            raise TypeError(
+                "No model given. Pass one explicitly, or build the dependency with "
+                "Querymate.for_model(Model) so it is bound."
+            )
+        return cast(type[T], resolved)
+
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
         """Convert native FastAPI QueryParams to a QueryMate instance.
@@ -132,28 +282,216 @@ class Querymate(BaseModel):
             Querymate: A new QueryMate instance.
 
         Raises:
-            ValueError: If the query parameter contains invalid JSON.
+            InvalidQueryError: If the query parameter contains invalid JSON.
         """
         # First try to get the main query parameter
         query: str | None = query_params.get(settings.QUERY_PARAM_NAME)
         if not query:
             return cls()
-        try:
-            return cls.model_validate(json.loads(query))
-        except json.JSONDecodeError as e:
-            raise ValueError("Invalid JSON in query parameter") from e
+        return cls._parse(query)
 
     @classmethod
     def from_query_param(cls, query_param: str) -> "Querymate":
-        """Convert a query parameter string to a QueryMate instance.
+        """Convert a URL-encoded query parameter string to a QueryMate instance.
 
         Args:
             query_param (str): The query parameter string.
 
         Returns:
             Querymate: A new QueryMate instance.
+
+        Raises:
+            InvalidQueryError: If the query parameter contains invalid JSON.
         """
-        return cls.model_validate(json.loads(unquote(query_param)))
+        return cls._parse(unquote(query_param))
+
+    @classmethod
+    def _parse(cls, raw: str) -> "Querymate":
+        """Parse the JSON of a query parameter into an instance.
+
+        Shared so both entry points reject malformed JSON the same way; previously
+        ``from_query_param`` let a raw JSONDecodeError escape as a 500.
+
+        Raises:
+            InvalidQueryError: If ``raw`` is not valid JSON, or is not a valid query.
+        """
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise InvalidQueryError(
+                "Invalid JSON in query parameter", parameter=settings.QUERY_PARAM_NAME
+            ) from e
+        return cls.validate_query(decoded)
+
+    @classmethod
+    def validate_query(cls, data: Any) -> "Querymate":
+        """Validate a decoded query, reporting an unknown key rather than dropping it.
+
+        Unknown keys are refused, not ignored. A typo in ``filter`` used to be
+        discarded in silence and the endpoint answered with every row - the worst
+        possible response to a misspelled restriction. The same rule the generated
+        schema already advertises (``additionalProperties: false``) now holds at
+        runtime.
+
+        Raises:
+            InvalidQueryError: If the document is not a valid query.
+        """
+        try:
+            return cls.model_validate(data)
+        except ValidationError as error:
+            raise _invalid_query(error) from error
+
+    @classmethod
+    def for_model(
+        cls,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+        resources: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
+    ) -> Callable[..., "Querymate"]:
+        """Build a FastAPI dependency that documents and enforces queries for a model.
+
+        Unlike :meth:`fastapi_dependency`, which takes the whole ``Request`` and so
+        leaves FastAPI nothing to document, this declares ``q`` as a typed parameter
+        carrying a JSON Schema built from the model. The endpoint then shows up in
+        Swagger with the fields it accepts, the operators valid for each one, and
+        runnable examples.
+
+        The same declaration is enforced: a query naming something outside ``exposed``
+        is rejected, so the documented surface and the real one cannot drift apart.
+
+        Because OpenAPI is generated once at startup while authorization is per
+        request, ``exposed`` describes what the endpoint may reveal to *someone*.
+        Narrowing it for a particular principal is the job of a scope
+        (see :mod:`querymate.core.scope`).
+
+        Args:
+            model: The model this endpoint queries.
+            exposed: The maximum surface offered. Defaults to the whole model, expanded
+                to ``max_depth``.
+            max_depth: How deep relationships may be expanded.
+
+        Returns:
+            A dependency returning a Querymate bound to ``model``, so ``run(db)`` needs
+            no second argument.
+
+        Example:
+            ```python
+            UsersQuery = Querymate.for_model(
+                User, exposed=Exposed(fields=["id", "name"], relationships={"posts": None})
+            )
+
+            @app.get("/users")
+            def list_users(q: Querymate = Depends(UsersQuery), db=Depends(get_db)):
+                return q.run(db)
+            ```
+        """
+        schema = build_query_schema(model, exposed, max_depth, resources, computed)
+        description = describe_query(model, exposed, max_depth, resources, computed)
+        examples = build_query_examples(model, exposed, max_depth, resources, computed)
+
+        def dependency(
+            q: Annotated[
+                str | None,
+                Query(
+                    description=description,
+                    openapi_examples=examples,
+                    json_schema_extra={
+                        # OpenAPI 3.1 carries a schema for a string holding JSON this
+                        # way, so tooling can validate and complete the value.
+                        "contentMediaType": "application/json",
+                        "contentSchema": schema,
+                    },
+                ),
+            ] = None,
+        ) -> Querymate:
+            instance = cls._parse(q) if q else cls()
+            instance._bound_model = model
+            instance._exposure = resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            )
+            instance._computed = computed
+            return instance
+
+        dependency.__name__ = f"{model.__name__}Query"
+        # Marker read by the descriptor exporter when it walks an app's routes, so the
+        # emitted contract is derived from what the app actually serves rather than
+        # from a description maintained alongside it.
+        dependency.__querymate__ = {  # type: ignore[attr-defined]
+            "model": model,
+            "exposed": exposed,
+            "transport": "query",
+            "exposure": resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            ),
+        }
+        return dependency
+
+    @classmethod
+    def body_for_model(
+        cls,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+        resources: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
+    ) -> Callable[..., "Querymate"]:
+        """The same query, sent as a JSON body instead of a URL parameter.
+
+        A URL has a length limit - proxies and servers commonly cut off somewhere
+        between 4KB and 8KB - and this grammar reaches it honestly: a deep selection
+        with a long ``in`` list is a real query, not an abuse. Once it does, the whole
+        API becomes unavailable to that caller with no recourse.
+
+        So the query travels in the body instead. The grammar is unchanged, the schema
+        is the same one, and the resulting ``Querymate`` behaves identically - only the
+        envelope differs. Mount it as a POST alongside the GET, or on its own::
+
+            UsersQuery = Querymate.body_for_model(User)
+
+            @app.post("/users/query")
+            def search_users(q: Querymate = Depends(UsersQuery), db=Depends(get_db)):
+                return q.run(db)
+
+        A POST that reads nothing is a wart, but it is a smaller one than a query that
+        cannot be sent. Keep the GET as the primary route and offer this for the
+        queries that outgrow it.
+
+        Returns:
+            A dependency returning a Querymate bound to ``model``.
+        """
+        schema = build_query_schema(model, exposed, max_depth, resources, computed)
+        description = describe_query(model, exposed, max_depth, resources, computed)
+        examples = build_query_examples(model, exposed, max_depth, resources, computed)
+        body_model = _query_body_model(model, schema)
+
+        def dependency(
+            body: Annotated[  # type: ignore[valid-type]
+                body_model,
+                Body(description=description, openapi_examples=examples),
+            ],
+        ) -> Querymate:
+            instance = cls.validate_query(body.root)  # type: ignore[attr-defined]
+            instance._bound_model = model
+            instance._exposure = resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            )
+            instance._computed = computed
+            return instance
+
+        dependency.__name__ = f"{model.__name__}QueryBody"
+        dependency.__querymate__ = {  # type: ignore[attr-defined]
+            "model": model,
+            "exposed": exposed,
+            "transport": "body",
+            "exposure": resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            ),
+        }
+        return dependency
 
     @classmethod
     def fastapi_dependency(cls, request: Request) -> "Querymate":
@@ -167,15 +505,22 @@ class Querymate(BaseModel):
         """
         return cls.from_qs(request.query_params)
 
+    def _payload(self) -> str:
+        """Serialize to the JSON that goes in the ``q`` parameter.
+
+        Unset blocks are left out rather than sent as nulls. A listing has no
+        aggregate and a filterless query has no filter; spelling that out inflates
+        every URL with the parts of the grammar the caller did not use.
+        """
+        return self.model_dump_json(by_alias=True, exclude_none=True)
+
     def to_qs(self) -> str:
         """Convert the QueryMate instance to a query string.
 
         Returns:
             str: The URL-encoded query string.
         """
-        return urlencode(
-            {settings.QUERY_PARAM_NAME: self.model_dump_json(by_alias=True)}
-        )
+        return urlencode({settings.QUERY_PARAM_NAME: self._payload()})
 
     def to_query_param(self) -> str:
         """Convert the QueryMate instance to a query string.
@@ -183,23 +528,83 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return quote(self.model_dump_json(by_alias=True))
+        return quote(self._payload())
 
-    def _pagination(self, total: int) -> PaginationInfo:
-        """Build a pagination dictionary from current state and total count.
+    def _page_size(self) -> int:
+        """The page size this query asks for."""
+        return self.limit if self.limit is not None else settings.DEFAULT_LIMIT
+
+    def _page_limit(self, paginated: bool, probe: bool) -> int | None:
+        """The limit to build with, before the probe row is added."""
+        if not paginated:
+            return None
+        return self._page_size()
+
+    def _apply_probe_limit(self, builder: QueryBuilder) -> None:
+        """Fetch one row past the page.
+
+        Applied to the statement rather than through ``apply_limit``, which clamps to
+        MAX_LIMIT - at the maximum page size the probe would be clamped away and every
+        last page would claim another one follows.
+        """
+        builder.query = builder.query.limit(self._page_size() + 1)
+
+    def _trim_probe(self, rows: list[Any], exact: bool) -> tuple[list[Any], bool]:
+        """Drop the probe row, reporting whether it was there.
+
+        With an exact count the caller gets ``has_next_page`` from the total instead,
+        and nothing was probed, so the page is returned as fetched.
+        """
+        if exact:
+            return rows, False
+        size = self._page_size()
+        return rows[:size], len(rows) > size
+
+    def _counts_exactly(self, default_exact: bool) -> bool:
+        """Whether to run the count query, given this style's default.
+
+        A page-numbered UI needs a total and an infinite scroll does not, so offset
+        pages count by default and cursor pages do not. Either can be overridden with
+        ``"count"``.
+        """
+        if self.count is None:
+            return default_exact
+        return self.count == "exact"
+
+    def _pagination(self, total: int | None, has_next_page: bool) -> PaginationInfo:
+        """Build pagination metadata, with or without a total.
+
+        Without one there is no page count and no page after this one to name, but
+        ``has_next_page`` is still known - it came from a probe row - and is reported.
+        Leaving it out would let a client read the absent ``next_page`` as "this is
+        the last page", which is a false statement rather than a missing one.
 
         Args:
-            total (int): Total number of matching records.
+            total: Total matching records, or None if the caller asked not to count.
+            has_next_page: Whether another page exists.
 
         Returns:
-            PaginationInfo: Pagination metadata with total, page, size, pages, previous_page, next_page.
+            PaginationInfo: Pagination metadata.
         """
         size = self.limit or settings.DEFAULT_LIMIT
         offset_val = self.offset or settings.DEFAULT_OFFSET
+        computed_page = (offset_val // size) + 1 if size > 0 else 1
+
+        if total is None:
+            page = max(1, computed_page)
+            return PaginationInfo(
+                total=None,
+                page=page,
+                size=size,
+                pages=None,
+                previous_page=page - 1 if page > 1 else None,
+                next_page=page + 1 if has_next_page else None,
+                has_next_page=has_next_page,
+            )
+
         pages = (total + size - 1) // size if size > 0 else 1
         # Ensure at least 1 page for empty results to keep semantics consistent
         pages = max(1, pages)
-        computed_page = (offset_val // size) + 1 if size > 0 else 1
         # Clamp page within [1, pages]
         page = max(1, min(computed_page, pages))
         previous_page = page - 1 if page > 1 else None
@@ -212,9 +617,103 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+            has_next_page=next_page is not None,
         )
 
-    def run_raw(self, db: Session, model: type[T]) -> list[T]:
+    def plan(
+        self, model: type[T] | None = None, *, scopes: BoundScopes | None = None
+    ) -> QueryPlan:
+        """Reduce this query to its canonical plan.
+
+        The plan is what identifies a query: two requests that differ only in the
+        order of their fields or filter branches produce the same one. It is what a
+        cache key is built from. See :mod:`querymate.core.plan`.
+
+        Example:
+            ```python
+            from querymate import cache_key
+
+            key = cache_key(q.plan(User), scopes)
+            ```
+        """
+        del scopes  # accepted for symmetry with the run methods; the plan is not scoped
+        return build_plan(self, self._resolve_model(model).__name__)
+
+    def _make_builder(
+        self,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        *,
+        paginated: bool = True,
+        probe: bool = False,
+    ) -> QueryBuilder:
+        """Create a QueryBuilder, resolve authorization scopes, and build the query.
+
+        Args:
+            model (type[T]): The SQLModel model class to query.
+            scopes (BoundScopes | None): Scopes bound to the current principal.
+            paginated (bool): Whether to apply limit/offset. Grouped queries paginate
+                per group instead, so they pass False.
+            probe (bool): Fetch one row past the page, to learn whether another page
+                exists without counting the whole set.
+
+        Returns:
+            QueryBuilder: The built query builder.
+        """
+        query_builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        query_builder.prepare_scopes(self.select)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self._page_limit(paginated, probe),
+            offset=self.offset if paginated else None,
+            join_type=self.join_type,
+        )
+        if probe and paginated:
+            self._apply_probe_limit(query_builder)
+        return query_builder
+
+    async def _make_builder_async(
+        self,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        *,
+        paginated: bool = True,
+        probe: bool = False,
+    ) -> QueryBuilder:
+        """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
+        query_builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        await query_builder.prepare_scopes_async(self.select)
+        query_builder.build(
+            select=self.select,
+            filter=self.filter,
+            sort=self.sort,
+            limit=self._page_limit(paginated, probe),
+            offset=self.offset if paginated else None,
+            join_type=self.join_type,
+        )
+        if probe and paginated:
+            self._apply_probe_limit(query_builder)
+        return query_builder
+
+    def run_raw(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> list[T]:
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -222,26 +721,21 @@ class Querymate(BaseModel):
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
+            scopes (BoundScopes | None): Authorization scopes bound to the current
+                principal, as returned by ``ScopeRegistry.bind(...)``.
 
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        return query_builder.fetch(db, model)
+        return self._make_builder(model, scopes).fetch(db)
 
     def run(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
         """Build and execute the query based on the parameters.
 
@@ -251,7 +745,7 @@ class Querymate(BaseModel):
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
@@ -268,56 +762,172 @@ class Querymate(BaseModel):
                 join_type="left"
             )
             results = querymate.run(db, User)
+
+            # Restricted to what the current principal may see
+            results = querymate.run(
+                db, User, scopes=scopes.bind(principal=me, db=db)
+            )
             ```
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        data = query_builder.fetch(db, model)
+        query_builder = self._make_builder(model, scopes)
+        data: list[Any] = query_builder.fetch(db)
         return query_builder.serialize(data)
 
     def run_paginated(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
         """Build and execute the query with pagination metadata.
 
+        The count is a second pass over the filtered set. It runs by default, because
+        an offset page is what a page-numbered UI asks for and that needs a total; send
+        ``"count": "none"`` to skip it and get ``has_next_page`` from one probe row
+        instead.
+
         Args:
-            db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            db (Session): The database session.
+            model (ModelClass): The model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        data = query_builder.fetch(db, model)
+        exact = self._counts_exactly(True)
+        query_builder = self._make_builder(model, scopes, probe=not exact)
+        data: list[Any] = query_builder.fetch(db)
+        data, has_next_page = self._trim_probe(data, exact)
         serialized = query_builder.serialize(data)
-        total = query_builder.count(db)
+        total = query_builder.count(db) if exact else None
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=self._pagination(total, has_next_page),
+        )
+
+    # -------------------------------------------------------------------------
+    # Cursor Pagination
+    # -------------------------------------------------------------------------
+
+    def run_cursor_paginated(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Return one page located by cursor rather than by offset.
+
+        ``offset`` makes the database find and discard N rows before returning any,
+        and is defined against a snapshot that no longer exists - insert a record
+        while someone pages through and every later page shifts by one. A cursor names
+        the last record seen, in the query's own order, so the boundary cannot move.
+
+        Pass the returned ``cursor.next`` back as ``cursor`` to get the following
+        page. The sort and the filter must stay the same; a cursor carries a
+        fingerprint of the query that made it and is refused otherwise.
+
+        Returns:
+            CursorPage[dict[str, Any]]: The page and where it sits in the sequence.
+
+        Example:
+            ```python
+            page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(
+                db, Post
+            )
+            next_page = Querymate(
+                sort=["-created_at"], limit=20, cursor=page.cursor.next
+            ).run_cursor_paginated(db, Post)
+            ```
+        """
+        builder, size = self._cursor_builder(model, scopes)
+        return self._cursor_page(builder, builder.fetch(db), size, db)
+
+    async def run_cursor_paginated_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Async counterpart of :meth:`run_cursor_paginated`."""
+        builder, size = await self._cursor_builder_async(model, scopes)
+        rows: list[Any] = await builder.fetch_async(db)
+        total = await builder.count_async(db) if self._counts_exactly(False) else None
+        return self._cursor_page(builder, rows, size, None, total)
+
+    def _cursor_builder(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> tuple[QueryBuilder, int]:
+        """Build the query for one cursor page, and return the page size asked for."""
+        builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        builder.prepare_scopes(self.select)
+        return self._finish_cursor_builder(builder)
+
+    async def _cursor_builder_async(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> tuple[QueryBuilder, int]:
+        """Async counterpart of :meth:`_cursor_builder`."""
+        builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        await builder.prepare_scopes_async(self.select)
+        return self._finish_cursor_builder(builder)
+
+    def _finish_cursor_builder(self, builder: QueryBuilder) -> tuple[QueryBuilder, int]:
+        """Apply everything but the ordering strategy shared with offset paging."""
+        if self.offset:
+            raise InvalidQueryError(
+                "A cursor already says where the page starts; 'offset' cannot be "
+                "combined with it."
+            )
+        size = self.limit if self.limit is not None else settings.DEFAULT_LIMIT
+        builder.apply_select(self.select, join_type=self.join_type)
+        builder.apply_filter(self.filter)
+        builder.apply_keyset(self.sort, self.cursor)
+        # One row more than asked for, to learn whether another page exists without
+        # counting the whole set. It is dropped before serializing.
+        builder.limit = size
+        builder.query = builder.query.limit(size + 1)
+        return builder, size
+
+    def _cursor_page(
+        self,
+        builder: QueryBuilder,
+        rows: list[Any],
+        size: int,
+        db: Session | None = None,
+        total: int | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Trim the probe row, encode the next cursor, and shape the response."""
+        has_more = len(rows) > size
+        page = rows[:size]
+        if db is not None and self._counts_exactly(False):
+            total = builder.count(db)
+        return CursorPage(
+            items=builder.serialize(page),
+            cursor=CursorInfo(
+                next=builder.cursor_for(page[-1]) if has_more and page else None,
+                has_more=has_more,
+                total=total,
+            ),
         )
 
     async def run_async(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> list[dict[str, Any]]:
         """Build and execute the query asynchronously based on the parameters.
 
@@ -327,7 +937,7 @@ class Querymate(BaseModel):
 
         Args:
             db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
@@ -346,51 +956,45 @@ class Querymate(BaseModel):
             results = await querymate.run_async(db, User)
             ```
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        data = await query_builder.fetch_async(db, model)
+        query_builder = await self._make_builder_async(model, scopes)
+        data: list[Any] = await query_builder.fetch_async(db)
         return query_builder.serialize(data)
 
     async def run_async_paginated(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
     ) -> PaginatedResponse[dict[str, Any]]:
         """Build and execute the query asynchronously with pagination metadata.
 
         Args:
-            db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            db (AsyncSession): The async database session.
+            model (ModelClass): The model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
-        )
-        data = await query_builder.fetch_async(db, model)
+        exact = self._counts_exactly(True)
+        query_builder = await self._make_builder_async(model, scopes, probe=not exact)
+        data: list[Any] = await query_builder.fetch_async(db)
+        data, has_next_page = self._trim_probe(data, exact)
         serialized = query_builder.serialize(data)
-        total = await query_builder.count_async(db)
+        total = await query_builder.count_async(db) if exact else None
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=self._pagination(total, has_next_page),
         )
 
-    async def run_raw_async(self, db: AsyncSession, model: type[T]) -> list[T]:
+    async def run_raw_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -398,21 +1002,103 @@ class Querymate(BaseModel):
 
         Args:
             db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            limit=self.limit,
-            offset=self.offset,
-            join_type=self.join_type,
+        query_builder = await self._make_builder_async(model, scopes)
+        return await query_builder.fetch_async(db)
+
+    # -------------------------------------------------------------------------
+    # Aggregate Query Methods
+    # -------------------------------------------------------------------------
+
+    def run_aggregated(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Compute aggregates, optionally grouped.
+
+        A separate mode with its own envelope rather than a variation of ``run()``:
+        a method that sometimes returns records and sometimes returns sums has no
+        shape a caller can rely on.
+
+        Returns:
+            dict: ``{"results": [...]}``. Each entry holds the aggregate values, plus
+            a ``key`` when grouped.
+
+        Example:
+            ```python
+            querymate = Querymate(
+                aggregate={"total": {"sum": "amount"}, "n": {"count": "*"}},
+                group_by="status",
+                having={"total": {"gt": 1000}},
+            )
+            querymate.run_aggregated(db, Order)
+            ```
+        """
+        aggregations = parse_aggregations(self.aggregate)
+        builder = self._aggregate_builder(model, scopes)
+        builder.prepare_scopes([])
+        builder.apply_filter(self.filter)
+        group_config, extractor = self._aggregate_grouping(dialect)
+        return {
+            "results": builder.aggregate(
+                db, aggregations, group_config, extractor, self.having
+            )
+        }
+
+    async def run_aggregated_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Async counterpart of :meth:`run_aggregated`."""
+        aggregations = parse_aggregations(self.aggregate)
+        builder = self._aggregate_builder(model, scopes)
+        await builder.prepare_scopes_async([])
+        builder.apply_filter(self.filter)
+        group_config, extractor = self._aggregate_grouping(dialect)
+        return {
+            "results": await builder.aggregate_async(
+                db, aggregations, group_config, extractor, self.having
+            )
+        }
+
+    def _aggregate_builder(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> QueryBuilder:
+        """Build a builder for an aggregate: no selection, only the restrictions.
+
+        An aggregate returns no records, so nothing is selected - what matters is the
+        set of rows being summarised, which the filters and the authorization scope of
+        the root model decide. The caller resolves the scopes, since only it knows
+        whether the resolvers may be awaited.
+        """
+        return QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
         )
-        return await query_builder.fetch_async(db, model)
+
+    def _aggregate_grouping(
+        self, dialect: Literal["postgresql", "sqlite"]
+    ) -> tuple[GroupByConfig | None, GroupKeyExtractor | None]:
+        """Resolve the optional group-by for an aggregate query."""
+        if self.group_by is None:
+            return None, None
+        return GroupByConfig.from_param(self.group_by), GroupKeyExtractor(
+            dialect=dialect
+        )
 
     # -------------------------------------------------------------------------
     # Grouped Query Methods
@@ -434,9 +1120,10 @@ class Querymate(BaseModel):
     def run_grouped(
         self,
         db: Session,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
+        scopes: BoundScopes | None = None,
     ) -> dict[str, Any]:
         """Build and execute a grouped query based on the parameters.
 
@@ -475,79 +1162,101 @@ class Querymate(BaseModel):
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            join_type=self.join_type,
+        query_builder = self._make_builder(model, scopes, paginated=False)
+        exact = self._counts_exactly(True)
+        per_group_limit = self._page_size()
+
+        # One query for the keys and their counts, one for every group's page. With
+        # "count": "none" the first is skipped and the keys come from the pages.
+        group_keys = (
+            query_builder.get_distinct_group_keys(db, group_config, extractor)
+            if exact
+            else None
+        )
+        items_by_key = query_builder.fetch_all_groups(
+            db,
+            group_config,
+            extractor,
+            limit=per_group_limit if exact else per_group_limit + 1,
+            offset=self.offset or 0,
+        )
+        return self._assemble_grouped_response(
+            query_builder, group_keys, items_by_key, per_group_limit
         )
 
-        # Get all distinct group keys with their counts
-        group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
+    def _assemble_grouped_response(
+        self,
+        query_builder: QueryBuilder,
+        group_keys: list[tuple[Any, int]] | None,
+        items_by_key: dict[Any, list[Any]],
+        per_group_limit: int,
+    ) -> dict[str, Any]:
+        """Serialize the fetched groups and apply the overall cap.
 
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        Every group's page is already loaded; this only decides how many of them fit
+        under MAX_LIMIT and marks the response truncated when some are dropped.
+
+        Args:
+            group_keys: Each group and its total, or None when the caller asked not to
+                count - in which case the groups are the ones that came back with rows,
+                and one probe row per group answers has_next_page instead.
+        """
+        counted = group_keys is not None
+        # Without the counts query, a group is known only by having rows on this page.
+        # A group whose page is empty is therefore absent, which is the honest answer:
+        # nothing was counted, so nothing says it exists.
+        entries: list[tuple[Any, int | None]] = (
+            list(group_keys)
+            if group_keys is not None
+            else [(key, None) for key in items_by_key]
+        )
+
         max_total = settings.MAX_LIMIT
         total_fetched = 0
         truncated = False
         groups: list[GroupResult] = []
 
-        for group_key, group_total in group_keys:
-            if total_fetched >= max_total:
-                truncated = True
-                break
+        for group_key, group_total in entries:
+            items = items_by_key.get(group_key, [])
+            has_next_page = not counted and len(items) > per_group_limit
+            items = items[:per_group_limit]
 
-            # Calculate how many items we can fetch for this group
             remaining = max_total - total_fetched
-            effective_limit = min(per_group_limit, remaining)
-
-            if effective_limit <= 0:
+            if remaining <= 0:
                 truncated = True
                 break
-
-            # Fetch items for this group
-            items = query_builder.fetch_for_group(
-                db,
-                model,
-                group_config,
-                extractor,
-                group_key,
-                limit=effective_limit,
-                offset=self.offset or 0,
-                join_type=self.join_type,
-            )
+            if len(items) > remaining:
+                items = items[:remaining]
+                truncated = True
 
             serialized = query_builder.serialize(items)
             total_fetched += len(serialized)
-
-            # Build pagination for this group
-            pagination = self._pagination_for_group(
-                total=group_total,
-                limit=per_group_limit,
-                offset=self.offset or 0,
-            )
 
             groups.append(
                 GroupResult(
                     key=str(group_key) if group_key is not None else None,
                     items=serialized,
-                    pagination=pagination,
+                    pagination=self._pagination_for_group(
+                        total=group_total,
+                        limit=per_group_limit,
+                        offset=self.offset or 0,
+                        has_next_page=has_next_page,
+                    ),
                 )
             )
 
-            # Check if we hit the limit mid-group
-            if len(serialized) < effective_limit and effective_limit < per_group_limit:
-                truncated = True
+        if len(groups) < len(entries):
+            truncated = True
 
-        response = GroupedResponse(groups=groups, truncated=truncated)
-        return response.model_dump()
+        return GroupedResponse(groups=groups, truncated=truncated).model_dump()
 
     async def run_grouped_async(
         self,
         db: AsyncSession,
-        model: type[T],
+        model: type[T] | None = None,
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
+        scopes: BoundScopes | None = None,
     ) -> dict[str, Any]:
         """Build and execute a grouped query asynchronously.
 
@@ -586,84 +1295,55 @@ class Querymate(BaseModel):
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
-        query_builder = QueryBuilder(model=model)
-        query_builder.build(
-            select=self.select,
-            filter=self.filter,
-            sort=self.sort,
-            join_type=self.join_type,
+        query_builder = await self._make_builder_async(model, scopes, paginated=False)
+
+        exact = self._counts_exactly(True)
+        per_group_limit = self._page_size()
+        group_keys = (
+            await query_builder.get_distinct_group_keys_async(
+                db, group_config, extractor
+            )
+            if exact
+            else None
         )
-
-        group_keys = await query_builder.get_distinct_group_keys_async(
-            db, group_config, extractor
+        items_by_key = await query_builder.fetch_all_groups_async(
+            db,
+            group_config,
+            extractor,
+            limit=per_group_limit if exact else per_group_limit + 1,
+            offset=self.offset or 0,
         )
-
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
-        max_total = settings.MAX_LIMIT
-        total_fetched = 0
-        truncated = False
-        groups: list[GroupResult] = []
-
-        for group_key, group_total in group_keys:
-            if total_fetched >= max_total:
-                truncated = True
-                break
-
-            remaining = max_total - total_fetched
-            effective_limit = min(per_group_limit, remaining)
-
-            if effective_limit <= 0:
-                truncated = True
-                break
-
-            items = await query_builder.fetch_for_group_async(
-                db,
-                model,
-                group_config,
-                extractor,
-                group_key,
-                limit=effective_limit,
-                offset=self.offset or 0,
-                join_type=self.join_type,
-            )
-
-            serialized = query_builder.serialize(items)
-            total_fetched += len(serialized)
-
-            pagination = self._pagination_for_group(
-                total=group_total,
-                limit=per_group_limit,
-                offset=self.offset or 0,
-            )
-
-            groups.append(
-                GroupResult(
-                    key=str(group_key) if group_key is not None else None,
-                    items=serialized,
-                    pagination=pagination,
-                )
-            )
-
-            if len(serialized) < effective_limit and effective_limit < per_group_limit:
-                truncated = True
-
-        response = GroupedResponse(groups=groups, truncated=truncated)
-        return response.model_dump()
+        return self._assemble_grouped_response(
+            query_builder, group_keys, items_by_key, per_group_limit
+        )
 
     def _pagination_for_group(
-        self, total: int, limit: int, offset: int
+        self, total: int | None, limit: int, offset: int, has_next_page: bool = False
     ) -> PaginationInfo:
         """Build pagination metadata for a single group.
 
         Args:
-            total: Total items in the group.
+            total: Total items in the group, or None if the caller asked not to count.
             limit: Per-group limit.
             offset: Offset within the group.
+            has_next_page: Whether a probe row showed another page, used when there is
+                no total to derive it from.
 
         Returns:
             PaginationInfo metadata.
         """
         size = limit
+        if total is None:
+            page = max(1, (offset // size) + 1 if size > 0 else 1)
+            return PaginationInfo(
+                total=None,
+                page=page,
+                size=size,
+                pages=None,
+                previous_page=page - 1 if page > 1 else None,
+                next_page=page + 1 if has_next_page else None,
+                has_next_page=has_next_page,
+            )
         pages = (total + size - 1) // size if size > 0 else 1
         pages = max(1, pages)
         computed_page = (offset // size) + 1 if size > 0 else 1
@@ -678,4 +1358,5 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+            has_next_page=next_page is not None,
         )

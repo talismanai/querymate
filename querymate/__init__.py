@@ -2,10 +2,36 @@
 QueryMate - A Python library for building and executing database queries.
 """
 
-__version__ = "0.5.2"  # Update this with your actual version
+__version__ = "1.0.0"
 
+from .core.aggregate import AGGREGATE_FUNCTIONS as AGGREGATE_FUNCTIONS
+from .core.aggregate import Aggregation as Aggregation
+from .core.aggregate import InvalidAggregateError as InvalidAggregateError
+from .core.cache import MissingScopeIdentityError as MissingScopeIdentityError
+from .core.cache import cache_key as cache_key
+from .core.cache import is_not_modified as is_not_modified
+from .core.cache import response_etag as response_etag
+from .core.computed import ComputedRegistry as ComputedRegistry
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
+from .core.cursor import InvalidCursorError as InvalidCursorError
+from .core.cursor import SortKey as SortKey
+from .core.descriptor import describe_app as describe_app
+from .core.descriptor import describe_resource as describe_resource
+from .core.exceptions import DepthExceededError as DepthExceededError
+from .core.exceptions import InvalidQueryError as InvalidQueryError
+from .core.exceptions import QuerymateError as QuerymateError
+from .core.exceptions import SelectionTooLargeError as SelectionTooLargeError
+from .core.exceptions import UnknownFieldError as UnknownFieldError
+from .core.exceptions import (
+    UnknownRelationshipError as UnknownRelationshipError,
+)
+from .core.exceptions import (
+    UnsupportedOperatorError as UnsupportedOperatorError,
+)
+from .core.exceptions import (
+    install_exception_handler as install_exception_handler,
+)
 from .core.filter import BlankPredicate as BlankPredicate
 from .core.filter import ContainsPredicate as ContainsPredicate
 from .core.filter import DoesNotMatchAllPredicate as DoesNotMatchAllPredicate
@@ -65,9 +91,22 @@ from .core.grouping import GroupByConfig as GroupByConfig
 from .core.grouping import GroupedResponse as GroupedResponse
 from .core.grouping import GroupKeyExtractor as GroupKeyExtractor
 from .core.grouping import GroupResult as GroupResult
+from .core.openapi import Exposed as Exposed
+from .core.openapi import ResourceRegistry as ResourceRegistry
+from .core.openapi import build_query_schema as build_query_schema
+from .core.plan import QueryPlan as QueryPlan
+from .core.plan import build_plan as build_plan
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
+from .core.scope import BoundScopes as BoundScopes
+from .core.scope import FieldGrants as FieldGrants
+from .core.scope import ScopeCache as ScopeCache
+from .core.scope import ScopeContext as ScopeContext
+from .core.scope import ScopeRegistry as ScopeRegistry
+from .core.scope import UnscopedModelError as UnscopedModelError
+from .types import CursorInfo as CursorInfo
+from .types import CursorPage as CursorPage
 from .types import PaginatedResponse as PaginatedResponse
 from .types import PaginationInfo as PaginationInfo
 from .types import QuerymatePaginatedResponse as QuerymatePaginatedResponse

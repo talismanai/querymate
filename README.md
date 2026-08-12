@@ -32,8 +32,16 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 🎨 Field Selection            | Select specific fields to return                                           |
 | 🏗️ Query Building             | Build SQL queries programmatically                                         |
 | ⚡ Async Support              | Full support for async database operations                                 |
+| 🧩 SQLModel *or* SQLAlchemy   | Either ORM, detected from the model; the whole surface tested against both |
 | 📦 Serialization              | Built-in serialization with support for relationships                      |
 | 📁 Grouping                   | Group results by field with date granularity and timezone support          |
+| 🔐 Authorization Scopes       | Apply your app's access rules to every model a query loads                 |
+| 📖 OpenAPI Schema             | Document `q` per model: fields, operators by type, runnable examples       |
+| 🧮 Aggregation                | `count`/`sum`/`avg`/`min`/`max`, grouped, with `having`                    |
+| ➡️ Cursor Pagination           | Keyset pages that survive inserts, with a cursor that fits its query       |
+| 🔢 Optional Counts            | `count: "none"` skips the count query; `has_next_page` still comes back    |
+| 📮 Body Transport             | Send the same query as a POST body when it outgrows the URL                |
+| 🗝️ Cache Primitives           | Canonical plan, scope-aware cache key, ETag — bring your own store         |
 
 ---
 
@@ -95,9 +103,15 @@ def get_users(
     db: Session = Depends(get_db)
 ):
     # Returns serialized results as a list
-    if query.include_pagination:
-        return query.run_paginated(db, User)
     return query.run(db, User)
+
+@app.get("/users/paginated")
+def get_users_paginated(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: Session = Depends(get_db)
+):
+    # Returns items plus pagination metadata
+    return query.run_paginated(db, User)
 
 @app.get("/users/raw")
 def get_users_raw(
@@ -145,9 +159,15 @@ async def get_users(
     db: AsyncSession = Depends(get_db)
 ):
     # Returns serialized results
-    if query.include_pagination:
-        return await query.run_async_paginated(db, User)
     return await query.run_async(db, User)
+
+@app.get("/users/paginated")
+async def get_users_paginated(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: AsyncSession = Depends(get_db)
+):
+    # Returns items plus pagination metadata
+    return await query.run_async_paginated(db, User)
 
 @app.get("/users/raw")
 async def get_users_raw(
@@ -173,6 +193,74 @@ async def get_users(
     # Results will be serialized according to the fields
     return await query.run_async(db, User)
 ```
+
+### OpenAPI Documentation
+
+`Depends(QueryMate.fastapi_dependency)` leaves the endpoint with **no query parameters
+in Swagger** — the dependency takes the whole `Request`, so FastAPI has nothing typed to
+document. `for_model` declares `q` properly and generates a schema from your model:
+
+```python
+from querymate import Querymate, Exposed
+
+UsersQuery = Querymate.for_model(
+    User,
+    exposed=Exposed(fields=["id", "name"], relationships={"posts": None}),
+)
+
+@app.get("/users")
+def list_users(q: Querymate = Depends(UsersQuery), db: Session = Depends(get_db)):
+    return q.run(db)          # for_model binds the model
+```
+
+The endpoint now documents its selectable, filterable and sortable fields, the operators
+valid for each one (`i_cont` on strings, `gt` on numbers and dates, `true` on booleans),
+and examples built from your own field names. `exposed` is enforced, not just
+documented — a query naming anything outside it is rejected with a 4xx, so the docs
+cannot drift from reality. Omit it to expose the whole model.
+
+Since OpenAPI is static and authorization is per-request, the schema describes what the
+endpoint may expose to *someone*; scopes decide what each principal actually sees.
+
+### Authorization Scopes
+
+QueryMate does not implement authorization — it applies the authorization your app
+already has. Declare, per model, the condition under which the current principal may
+see its rows, and QueryMate injects it into every query that loads that model,
+including nested relationships.
+
+Access usually has to be looked up ("is the user on a team that has access?"), so a
+scope is a resolver receiving the principal and a live session:
+
+```python
+from querymate import ScopeRegistry
+
+scopes = ScopeRegistry()
+
+@scopes.register(Post)
+def post_scope(ctx):
+    return Post.team_id.in_(
+        select(TeamMember.team_id).where(TeamMember.user_id == ctx.principal.id)
+    )
+
+@app.get("/users")
+def list_users(
+    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    db: Session = Depends(get_db),
+    me = Depends(get_current_user),
+):
+    return query.run(db, User, scopes=scopes.bind(principal=me, db=db))
+```
+
+Each resolver runs at most once per model per request — never once per row — and
+`ctx.cache` lets several models share one expensive lookup. Counts respect scopes, so
+`total` never leaks the existence of invisible rows. Querying a model with no
+registered scope raises `UnscopedModelError`; mark genuinely public data with
+`scopes.allow_all(Model)`, or bind with `strict=False` to adopt scopes gradually.
+Omitting `scopes=` leaves behaviour unchanged.
+
+See [the authorization guide](docs/source/usage/authorization.rst) for async
+resolvers and the current limits.
 
 ### Logical Filters (AND/OR)
 
@@ -265,6 +353,50 @@ The standard `run` and `run_async` methods always return a plain list of items:
 # Always returns a list[dict[str, Any]]
 result = query.run(db, User)
 ```
+
+### Cursor Pagination
+
+`offset` makes the database find and discard N rows before returning any, and it is
+defined against a snapshot that no longer exists — insert a record while someone pages
+through and every later page shifts by one. A cursor names the last record seen, in the
+query's own order, so the boundary cannot move.
+
+```python
+page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(db, Post)
+# page.items, page.cursor.next, page.cursor.has_more
+
+following = Querymate(
+    sort=["-created_at"], limit=20, cursor=page.cursor.next
+).run_cursor_paginated(db, Post)
+```
+
+The primary key is appended as a tiebreaker so any sort gives a total order. The cursor
+is opaque and carries a fingerprint of the sort and filter that produced it — reuse it
+against a different query and it is refused, not silently misapplied. `cursor.total` is
+absent unless `count: "exact"` asks for it, since that count is the work this avoids.
+
+---
+
+### Aggregation
+
+`group_by` returns the *records* of each group. "How much did each month bring in" is a
+different question, and answering it without aggregates means fetching every record and
+adding them up in the client.
+
+```python
+Querymate(
+    aggregate={"total": {"sum": "amount"}, "n": {"count": "*"}},
+    group_by="status",
+    having={"total": {"gt": 1000}},
+).run_aggregated(db, Order)
+# {"results": [{"key": "paid", "total": 4200, "n": 17}]}
+```
+
+Whatever the number of groups, it is one query. Row scopes and filters restrict what is
+summarised, and aggregating a column goes through the same field check as selecting it —
+an aggregate can never total rows the caller could not have read one by one.
+
+---
 
 ### Grouping
 
@@ -575,6 +707,27 @@ make docs
 # View the documentation
 open docs/_build/html/index.html
 ```
+
+---
+
+### Caching
+
+Every query reduces to a canonical **plan**: two requests differing only in field order
+or in the order of `and` branches produce the same digest. The cache key is built from
+it, so the same query is never stored twice under different keys.
+
+```python
+from querymate import cache_key
+
+scopes = registry.bind(principal=me, db=db, identity=f"user:{me.id}")
+
+# Bring your own store; QueryMate supplies the key.
+key = cache_key(q.plan(User), scopes)
+```
+
+`cache_key` requires a scope identity and refuses to build a key without one: the same
+query returns different rows to different people, and a key that ignores who is asking
+serves one user's records to another — silently, from the first request onward.
 
 ---
 

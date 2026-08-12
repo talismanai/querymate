@@ -25,7 +25,7 @@ test:
 	@. .venv/bin/activate && python -m pytest -v -s tests/
 
 test-cov:
-	@. .venv/bin/activate && python -m pytest --cov=querymate --cov-report=term-missing tests/
+	@. .venv/bin/activate && python -m pytest --cov=querymate --cov-branch --cov-report=term-missing --cov-fail-under=100 tests/
 
 # Linting and formatting
 lint:

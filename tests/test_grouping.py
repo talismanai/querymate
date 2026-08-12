@@ -4,6 +4,7 @@
 from datetime import datetime
 
 import pytest
+from pydantic import ValidationError
 from sqlmodel import Session
 
 from querymate import Querymate
@@ -13,6 +14,7 @@ from querymate.core.grouping import (
     GroupKeyExtractor,
 )
 
+from .helpers import capture_sql
 from .models import Post, User
 
 # -----------------------------------------------------------------------------
@@ -476,3 +478,160 @@ class TestGroupedQueries:
             assert "pages" in pagination
             assert pagination["page"] == 1
             assert pagination["size"] == 1
+
+
+class TestGroupingQueryCount:
+    """Grouping used to issue one query per distinct group key.
+
+    A grouped request therefore cost time proportional to how many distinct values
+    the data happened to contain - a property of the data, not of the request. A
+    window function pages every group in one pass instead.
+    """
+
+    def _seed(self, db: Session, groups: int) -> None:
+        db.add(User(id=1, name="A", email="a@x.com", age=30, is_active=True))
+        for idx in range(1, groups * 3 + 1):
+            db.add(
+                Post(
+                    id=idx,
+                    title=f"Post {idx}",
+                    content="c",
+                    user_id=1,
+                    status=f"status-{idx % groups}",
+                )
+            )
+        db.commit()
+
+    def test_query_count_does_not_grow_with_group_count(self, db: Session) -> None:
+        self._seed(db, groups=25)
+
+        querymate = Querymate(
+            select=["id", "title", "status"], group_by="status", limit=5
+        )
+        with capture_sql(db) as statements:
+            result = querymate.run_grouped(db, Post, dialect="sqlite")
+
+        assert len(result["groups"]) == 25
+        assert len(statements) <= 3, f"expected a constant count, got {statements}"
+
+    def test_every_group_is_paged_to_the_limit(self, db: Session) -> None:
+        self._seed(db, groups=4)
+
+        querymate = Querymate(
+            select=["id", "title", "status"], group_by="status", limit=2
+        )
+        result = querymate.run_grouped(db, Post, dialect="sqlite")
+
+        assert len(result["groups"]) == 4
+        for group in result["groups"]:
+            assert len(group["items"]) == 2
+            assert group["pagination"]["total"] == 3
+
+    def test_offset_applies_within_each_group(self, db: Session) -> None:
+        self._seed(db, groups=2)
+
+        first = Querymate(select=["id"], group_by="status", limit=1).run_grouped(
+            db, Post, dialect="sqlite"
+        )
+        second = Querymate(
+            select=["id"], group_by="status", limit=1, offset=1
+        ).run_grouped(db, Post, dialect="sqlite")
+
+        for group_a, group_b in zip(first["groups"], second["groups"], strict=True):
+            assert group_a["key"] == group_b["key"]
+            assert group_a["items"] != group_b["items"]
+
+
+class TestGroupKeyExtractorInternals:
+    """The parts of key extraction the end-to-end grouped tests do not reach.
+
+    PostgreSQL is one of them: the SQL it emits differs from SQLite's entirely, and
+    the suite runs on SQLite. Compiling the expression against the PostgreSQL dialect
+    checks what would actually be sent.
+    """
+
+    def _postgres_sql(self, config: GroupByConfig) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        expression = GroupKeyExtractor(dialect="postgresql").get_group_key_expression(
+            User.created_at, config
+        )
+        return str(
+            expression.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+
+    def test_a_field_with_no_granularity_groups_on_the_column(self):
+        extractor = GroupKeyExtractor(dialect="postgresql")
+
+        expression = extractor.get_group_key_expression(
+            User.status, GroupByConfig(field="status")
+        )
+
+        assert expression is User.status
+
+    @pytest.mark.parametrize(
+        ("granularity", "format_string"),
+        [
+            ("year", "YYYY"),
+            ("month", "YYYY-MM"),
+            ("day", "YYYY-MM-DD"),
+            ("hour", 'YYYY-MM-DD"T"HH24'),
+            ("minute", 'YYYY-MM-DD"T"HH24:MI'),
+        ],
+    )
+    def test_postgres_truncates_and_formats_per_granularity(
+        self, granularity, format_string
+    ):
+        sql = self._postgres_sql(
+            GroupByConfig(field="created_at", granularity=granularity)
+        )
+
+        assert "date_trunc" in sql
+        assert format_string in sql
+
+    def test_postgres_applies_a_timezone_offset_as_an_interval(self):
+        sql = self._postgres_sql(
+            GroupByConfig(field="created_at", granularity="day", tz_offset=-3)
+        )
+
+        assert "make_interval" in sql
+        assert "-3" in sql
+
+    def test_postgres_without_an_offset_does_not_shift_the_column(self):
+        sql = self._postgres_sql(
+            GroupByConfig(field="created_at", granularity="day", tz_offset=0)
+        )
+
+        assert "make_interval" not in sql
+
+    def test_sqlite_applies_a_timezone_offset_as_a_modifier(self):
+        expression = GroupKeyExtractor(dialect="sqlite").get_group_key_expression(
+            User.created_at,
+            GroupByConfig(field="created_at", granularity="day", tz_offset=-3),
+        )
+        sql = str(expression.compile(compile_kwargs={"literal_binds": True}))
+
+        assert "-3 hours" in sql
+
+
+class TestGranularityValidation:
+    """The validator accepts three kinds of input and rejects the rest."""
+
+    def test_an_enum_member_passes_through(self):
+        config = GroupByConfig(field="created_at", granularity=DateGranularity.MONTH)
+
+        assert config.granularity is DateGranularity.MONTH
+
+    def test_a_string_is_normalised_case_insensitively(self):
+        config = GroupByConfig(field="created_at", granularity="MONTH")
+
+        assert config.granularity is DateGranularity.MONTH
+
+    def test_none_stays_none(self):
+        assert GroupByConfig(field="created_at", granularity=None).granularity is None
+
+    def test_a_value_of_the_wrong_type_is_refused(self):
+        with pytest.raises(ValidationError, match="Invalid granularity type"):
+            GroupByConfig(field="created_at", granularity=7)

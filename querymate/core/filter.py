@@ -3,11 +3,23 @@ from datetime import UTC, date, datetime
 from typing import Any, ClassVar, TypeVar
 
 from sqlalchemy import and_, or_
+from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.type_api import TypeEngine
-from sqlmodel import SQLModel
+from sqlmodel import inspect
 
+from querymate.core.compat import ModelClass
+from querymate.core.computed import (
+    ComputedRegistry,
+    computed_expression,
+    computed_names,
+)
 from querymate.core.config import settings
+from querymate.core.exceptions import (
+    UnknownFieldError,
+    UnknownRelationshipError,
+    UnsupportedOperatorError,
+)
 
 T = TypeVar("T")
 
@@ -522,11 +534,11 @@ class DefaultFieldResolver:
         ```
     """
 
-    def resolve(self, model: type[SQLModel], field_path: str) -> InstrumentedAttribute:
+    def resolve(self, model: ModelClass, field_path: str) -> InstrumentedAttribute:
         """Resolve a field path to a SQLAlchemy column.
 
         Args:
-            model (type[SQLModel]): The SQLModel class to start resolution from.
+            model (ModelClass): The SQLModel class to start resolution from.
             field_path (str): The dot-separated path to the field.
 
         Returns:
@@ -546,7 +558,8 @@ class DefaultFieldResolver:
                 else:
                     current = attr
             else:
-                raise AttributeError(f"Field {part} not found in {current}")
+                name = getattr(current, "__name__", str(current))
+                raise UnknownFieldError(part, name)
         return current
 
 
@@ -574,16 +587,28 @@ class FilterBuilder:
     """
 
     def __init__(
-        self, model: type[SQLModel], resolver: DefaultFieldResolver | None = None
+        self,
+        model: ModelClass,
+        resolver: DefaultFieldResolver | None = None,
+        computed: ComputedRegistry | None = None,
     ) -> None:
         """Initialize the filter builder.
 
         Args:
-            model (type[SQLModel]): The SQLModel class to build filters for.
+            model (ModelClass): The SQLModel class to build filters for.
             resolver (DefaultFieldResolver | None): Optional field resolver. Defaults to DefaultFieldResolver.
+            computed (ComputedRegistry | None): Custom computed fields, so a filter can
+                name one alongside stored columns.
         """
         self.model = model
         self.resolver = resolver or DefaultFieldResolver()
+        self.computed = computed
+
+    def _resolve(self, model: ModelClass, field: str) -> Any:
+        """Resolve a leaf field to a column or a computed expression."""
+        if field in computed_names(model, self.computed):
+            return computed_expression(model, field, self.computed)
+        return self.resolver.resolve(model, field)
 
     def _get_column_type(self, column: InstrumentedAttribute) -> TypeEngine | None:
         """Return the SQLAlchemy type associated with an instrumented column."""
@@ -703,11 +728,45 @@ class FilterBuilder:
         """
         return self._parse(self.model, filters_dict)
 
-    def _parse(self, model: type[SQLModel], filters_dict: dict) -> list[Any]:
+    def _leaf_condition(self, column: InstrumentedAttribute, condition: Any) -> Any:
+        """Build the condition for a single column.
+
+        A field may carry several operators (``{"cont": "a", "starts_with": "b"}``);
+        they are combined with AND so that one row has to satisfy all of them.
+
+        Raises:
+            ValueError: If an unsupported operator is used.
+        """
+        if not isinstance(condition, dict):
+            # Default to equality if no operator is specified
+            return column == self._cast_value(column, "eq", condition)
+
+        expressions: list[Any] = []
+        for operator, value in condition.items():
+            if operator not in settings.FILTER_OPERATORS:
+                raise UnsupportedOperatorError(operator, settings.FILTER_OPERATORS)
+            casted_value = self._cast_value(column, operator, value)
+            expressions.append(
+                Predicate.registry[operator]().apply(column, casted_value)
+            )
+
+        if len(expressions) == 1:
+            return expressions[0]
+        return and_(*expressions)
+
+    def _parse(self, model: ModelClass, filters_dict: dict) -> list[Any]:
         """Parse a filter dictionary into SQLAlchemy expressions.
 
+        Conditions on related fields become correlated EXISTS subqueries rather than
+        relying on a join. That keeps a filter working whether or not the relationship
+        is also selected, makes it usable in COUNT, and avoids multiplying rows.
+
+        Conditions sharing a relationship prefix are grouped into a single EXISTS, so
+        ``{"posts.title": ..., "posts.content": ...}`` asks for one post satisfying
+        both rather than two posts each satisfying one.
+
         Args:
-            model (type[SQLModel]): The SQLModel class to parse filters for.
+            model (ModelClass): The SQLModel class to parse filters for.
             filters_dict (dict): The filter dictionary to parse.
 
         Returns:
@@ -715,32 +774,54 @@ class FilterBuilder:
 
         Raises:
             ValueError: If an unsupported operator is used.
+            AttributeError: If a field or relationship cannot be resolved.
         """
         filters: list[Any] = []
+        # Conditions on the same relationship, keyed by the first hop.
+        nested: dict[str, dict[str, Any]] = {}
+
         for field, condition in filters_dict.items():
             if field == "and":
                 and_conditions = []
                 for cond in condition:
                     and_conditions.extend(self._parse(model, cond))
-                filters.append(and_(*and_conditions))
+                # A group with no branches restricts nothing, and an empty and_() is
+                # deprecated in SQLAlchemy besides.
+                if and_conditions:
+                    filters.append(and_(*and_conditions))
             elif field == "or":
                 or_conditions = []
                 for cond in condition:
                     or_conditions.extend(self._parse(model, cond))
-                filters.append(or_(*or_conditions))
+                if or_conditions:
+                    filters.append(or_(*or_conditions))
+            elif "." in field:
+                head, remainder = field.split(".", 1)
+                nested.setdefault(head, {})[remainder] = condition
             else:
-                column = self.resolver.resolve(model, field)
-                if isinstance(condition, dict):
-                    for operator, value in condition.items():
-                        if operator not in settings.FILTER_OPERATORS:
-                            raise ValueError(f"Unsupported operator: {operator}")
-                        # Cast the value before applying the predicate
-                        casted_value = self._cast_value(column, operator, value)
-                        predicate = Predicate.registry[operator]()
-                        filters.append(predicate.apply(column, casted_value))
-                else:
-                    # Default to equality if no operator is specified
-                    casted_value = self._cast_value(column, "eq", condition)
-                    filters.append(column == casted_value)
+                column = self._resolve(model, field)
+                filters.append(self._leaf_condition(column, condition))
+
+        for relationship_name, sub_filters in nested.items():
+            mapper: Mapper = inspect(model)
+            relationship = mapper.relationships.get(relationship_name)
+            if relationship is None:
+                raise UnknownRelationshipError(
+                    relationship_name,
+                    model.__name__,
+                    set(mapper.relationships.keys()),
+                )
+            related_model: ModelClass = relationship.mapper.class_
+            inner_conditions = self._parse(related_model, sub_filters)
+            inner = (
+                inner_conditions[0]
+                if len(inner_conditions) == 1
+                else and_(*inner_conditions)
+            )
+            attribute = getattr(model, relationship_name)
+            # any() for collections, has() for to-one; both compile to EXISTS.
+            filters.append(
+                attribute.any(inner) if relationship.uselist else attribute.has(inner)
+            )
 
         return filters

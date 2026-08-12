@@ -42,6 +42,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Without this the workflow runs on a detached HEAD, so the version-bump
+          # commit below has no branch to go to and the bare `git push` is a no-op.
+          # The tag still lands, which is why the tags ran ahead of pyproject.toml for
+          # every release from 0.5.3 to 0.6.9 while main stayed at 0.5.2.
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -118,8 +123,10 @@ jobs:
           git add pyproject.toml CHANGELOG.md querymate/__init__.py
           git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
           git tag -a "v${{ github.event.inputs.version }}" -m "Release v${{ github.event.inputs.version }}"
+          # Push the branch first: if it fails, the tag is not created either, and the
+          # release can be retried. Tagging first leaves an orphan tag behind.
+          git push origin "HEAD:${{ github.ref_name }}"
           git push origin "v${{ github.event.inputs.version }}"
-          git push
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch' && success()
@@ -151,6 +158,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Without this the workflow runs on a detached HEAD, so the version-bump
+          # commit below has no branch to go to and the bare `git push` is a no-op.
+          # The tag still lands, which is why the tags ran ahead of pyproject.toml for
+          # every release from 0.5.3 to 0.6.9 while main stayed at 0.5.2.
+          ref: ${{ github.ref_name }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
