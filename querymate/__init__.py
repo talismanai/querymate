@@ -2,7 +2,7 @@
 QueryMate - A Python library for building and executing database queries.
 """
 
-__version__ = "0.5.2"  # Update this with your actual version
+__version__ = "1.0.0"
 
 from .core.aggregate import AGGREGATE_FUNCTIONS as AGGREGATE_FUNCTIONS
 from .core.aggregate import Aggregation as Aggregation
