@@ -30,14 +30,21 @@ NormalizedSelection = TypeAliasType(
 
 
 class PaginationInfo(BaseModel):
-    """Pagination metadata for query results."""
+    """Pagination metadata for query results.
 
-    total: int
+    ``total`` and ``pages`` are absent when the caller asked not to count
+    (``"count": "none"``). ``has_next_page`` is not: it is always known, either from
+    the total or from one probe row, and a client that cannot tell "no more pages"
+    from "we did not check" has been told something false rather than nothing.
+    """
+
+    total: int | None = None
     page: int
     size: int
-    pages: int
+    pages: int | None = None
     previous_page: int | None = None
     next_page: int | None = None
+    has_next_page: bool | None = None
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
@@ -52,8 +59,8 @@ class CursorInfo(BaseModel):
 
     next: str | None = None
     has_more: bool = False
-    # Present only when the caller asked for it: counting the whole set is the work a
-    # cursor exists to avoid, so it is never done implicitly.
+    # Present only when the caller asked for it with "count": "exact". Counting the
+    # whole set is the work a cursor exists to avoid, so it is never done implicitly.
     total: int | None = None
 
 

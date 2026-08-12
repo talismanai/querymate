@@ -39,6 +39,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 📖 OpenAPI Schema             | Document `q` per model: fields, operators by type, runnable examples       |
 | 🧮 Aggregation                | `count`/`sum`/`avg`/`min`/`max`, grouped, with `having`                    |
 | ➡️ Cursor Pagination           | Keyset pages that survive inserts, with a cursor that fits its query       |
+| 🔢 Optional Counts            | `count: "none"` skips the count query; `has_next_page` still comes back    |
 | 📮 Body Transport             | Send the same query as a POST body when it outgrows the URL                |
 | 🗝️ Cache Primitives           | Canonical plan, scope-aware cache key, ETag — bring your own store         |
 
@@ -372,7 +373,7 @@ following = Querymate(
 The primary key is appended as a tiebreaker so any sort gives a total order. The cursor
 is opaque and carries a fingerprint of the sort and filter that produced it — reuse it
 against a different query and it is refused, not silently misapplied. `cursor.total` is
-absent unless `with_total` asks for it, since that count is the work this avoids.
+absent unless `count: "exact"` asks for it, since that count is the work this avoids.
 
 ---
 

@@ -146,6 +146,6 @@ def build_plan(query: Any, model_name: str) -> QueryPlan:
         body["having"] = _canonical(query.having)
     if query.cursor:
         body["cursor"] = query.cursor
-    if query.with_total:
-        body["with_total"] = True
+    if query.count:
+        body["count"] = query.count
     return QueryPlan(model=model_name, body=body)

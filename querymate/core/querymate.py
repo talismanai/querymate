@@ -94,7 +94,7 @@ _QUERY_KEYS = (
     settings.LIMIT_PARAM_NAME,
     settings.OFFSET_PARAM_NAME,
     settings.CURSOR_PARAM_NAME,
-    settings.WITH_TOTAL_PARAM_NAME,
+    settings.COUNT_PARAM_NAME,
     settings.AGGREGATE_PARAM_NAME,
     settings.HAVING_PARAM_NAME,
     settings.GROUP_BY_PARAM_NAME,
@@ -124,6 +124,9 @@ def _invalid_query(error: ValidationError) -> InvalidQueryError:
 # Type aliases for better readability
 FilterCondition = dict[str, Any]
 GroupByParam = str | dict[str, Any]
+# Whether the total is computed. A count is a second pass over the filtered set; a
+# page-numbered UI needs it and an infinite scroll does not.
+CountMode = Literal["exact", "none"]
 
 
 class Querymate(BaseModel):
@@ -218,13 +221,15 @@ class Querymate(BaseModel):
         ),
         alias=settings.CURSOR_PARAM_NAME,
     )
-    with_total: bool | None = Field(  # type: ignore[literal-required]
+    count: CountMode | None = Field(  # type: ignore[literal-required]
         default=None,
         description=(
-            "Ask a cursor page to also count the whole set. Off by default: that "
-            "count is the expensive part cursor pagination exists to avoid."
+            "Whether to compute the total. 'exact' runs a count query; 'none' skips "
+            "it and reports has_next_page from one probe row instead. Defaults to "
+            "'exact' for offset pages and 'none' for cursor pages, which is what each "
+            "style is for."
         ),
-        alias=settings.WITH_TOTAL_PARAM_NAME,
+        alias=settings.COUNT_PARAM_NAME,
     )
     aggregate: dict[str, Any] | None = Field(  # type: ignore[literal-required]
         default=None,
@@ -524,21 +529,81 @@ class Querymate(BaseModel):
         """
         return quote(self._payload())
 
-    def _pagination(self, total: int) -> PaginationInfo:
-        """Build a pagination dictionary from current state and total count.
+    def _page_size(self) -> int:
+        """The page size this query asks for."""
+        return self.limit if self.limit is not None else settings.DEFAULT_LIMIT
+
+    def _page_limit(self, paginated: bool, probe: bool) -> int | None:
+        """The limit to build with, before the probe row is added."""
+        if not paginated:
+            return None
+        return self._page_size()
+
+    def _apply_probe_limit(self, builder: QueryBuilder) -> None:
+        """Fetch one row past the page.
+
+        Applied to the statement rather than through ``apply_limit``, which clamps to
+        MAX_LIMIT - at the maximum page size the probe would be clamped away and every
+        last page would claim another one follows.
+        """
+        builder.query = builder.query.limit(self._page_size() + 1)
+
+    def _trim_probe(self, rows: list[Any], exact: bool) -> tuple[list[Any], bool]:
+        """Drop the probe row, reporting whether it was there.
+
+        With an exact count the caller gets ``has_next_page`` from the total instead,
+        and nothing was probed, so the page is returned as fetched.
+        """
+        if exact:
+            return rows, False
+        size = self._page_size()
+        return rows[:size], len(rows) > size
+
+    def _counts_exactly(self, default_exact: bool) -> bool:
+        """Whether to run the count query, given this style's default.
+
+        A page-numbered UI needs a total and an infinite scroll does not, so offset
+        pages count by default and cursor pages do not. Either can be overridden with
+        ``"count"``.
+        """
+        if self.count is None:
+            return default_exact
+        return self.count == "exact"
+
+    def _pagination(self, total: int | None, has_next_page: bool) -> PaginationInfo:
+        """Build pagination metadata, with or without a total.
+
+        Without one there is no page count and no page after this one to name, but
+        ``has_next_page`` is still known - it came from a probe row - and is reported.
+        Leaving it out would let a client read the absent ``next_page`` as "this is
+        the last page", which is a false statement rather than a missing one.
 
         Args:
-            total (int): Total number of matching records.
+            total: Total matching records, or None if the caller asked not to count.
+            has_next_page: Whether another page exists.
 
         Returns:
-            PaginationInfo: Pagination metadata with total, page, size, pages, previous_page, next_page.
+            PaginationInfo: Pagination metadata.
         """
         size = self.limit or settings.DEFAULT_LIMIT
         offset_val = self.offset or settings.DEFAULT_OFFSET
+        computed_page = (offset_val // size) + 1 if size > 0 else 1
+
+        if total is None:
+            page = max(1, computed_page)
+            return PaginationInfo(
+                total=None,
+                page=page,
+                size=size,
+                pages=None,
+                previous_page=page - 1 if page > 1 else None,
+                next_page=page + 1 if has_next_page else None,
+                has_next_page=has_next_page,
+            )
+
         pages = (total + size - 1) // size if size > 0 else 1
         # Ensure at least 1 page for empty results to keep semantics consistent
         pages = max(1, pages)
-        computed_page = (offset_val // size) + 1 if size > 0 else 1
         # Clamp page within [1, pages]
         page = max(1, min(computed_page, pages))
         previous_page = page - 1 if page > 1 else None
@@ -551,6 +616,7 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+            has_next_page=next_page is not None,
         )
 
     def plan(
@@ -578,6 +644,7 @@ class Querymate(BaseModel):
         scopes: BoundScopes | None,
         *,
         paginated: bool = True,
+        probe: bool = False,
     ) -> QueryBuilder:
         """Create a QueryBuilder, resolve authorization scopes, and build the query.
 
@@ -586,6 +653,8 @@ class Querymate(BaseModel):
             scopes (BoundScopes | None): Scopes bound to the current principal.
             paginated (bool): Whether to apply limit/offset. Grouped queries paginate
                 per group instead, so they pass False.
+            probe (bool): Fetch one row past the page, to learn whether another page
+                exists without counting the whole set.
 
         Returns:
             QueryBuilder: The built query builder.
@@ -601,10 +670,12 @@ class Querymate(BaseModel):
             select=self.select,
             filter=self.filter,
             sort=self.sort,
-            limit=self.limit if paginated else None,
+            limit=self._page_limit(paginated, probe),
             offset=self.offset if paginated else None,
             join_type=self.join_type,
         )
+        if probe and paginated:
+            self._apply_probe_limit(query_builder)
         return query_builder
 
     async def _make_builder_async(
@@ -613,6 +684,7 @@ class Querymate(BaseModel):
         scopes: BoundScopes | None,
         *,
         paginated: bool = True,
+        probe: bool = False,
     ) -> QueryBuilder:
         """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
         query_builder = QueryBuilder(
@@ -626,10 +698,12 @@ class Querymate(BaseModel):
             select=self.select,
             filter=self.filter,
             sort=self.sort,
-            limit=self.limit if paginated else None,
+            limit=self._page_limit(paginated, probe),
             offset=self.offset if paginated else None,
             join_type=self.join_type,
         )
+        if probe and paginated:
+            self._apply_probe_limit(query_builder)
         return query_builder
 
     def run_raw(
@@ -707,21 +781,28 @@ class Querymate(BaseModel):
     ) -> PaginatedResponse[dict[str, Any]]:
         """Build and execute the query with pagination metadata.
 
+        The count is a second pass over the filtered set. It runs by default, because
+        an offset page is what a page-numbered UI asks for and that needs a total; send
+        ``"count": "none"`` to skip it and get ``has_next_page`` from one probe row
+        instead.
+
         Args:
-            db (Session): The SQLModel database session.
-            model (ModelClass): The SQLModel model class to query.
+            db (Session): The database session.
+            model (ModelClass): The model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = self._make_builder(model, scopes)
+        exact = self._counts_exactly(True)
+        query_builder = self._make_builder(model, scopes, probe=not exact)
         data: list[Any] = query_builder.fetch(db)
+        data, has_next_page = self._trim_probe(data, exact)
         serialized = query_builder.serialize(data)
-        total = query_builder.count(db)
+        total = query_builder.count(db) if exact else None
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=self._pagination(total, has_next_page),
         )
 
     # -------------------------------------------------------------------------
@@ -772,7 +853,7 @@ class Querymate(BaseModel):
         """Async counterpart of :meth:`run_cursor_paginated`."""
         builder, size = await self._cursor_builder_async(model, scopes)
         rows: list[Any] = await builder.fetch_async(db)
-        total = await builder.count_async(db) if self.with_total else None
+        total = await builder.count_async(db) if self._counts_exactly(False) else None
         return self._cursor_page(builder, rows, size, None, total)
 
     def _cursor_builder(
@@ -829,7 +910,7 @@ class Querymate(BaseModel):
         """Trim the probe row, encode the next cursor, and shape the response."""
         has_more = len(rows) > size
         page = rows[:size]
-        if self.with_total and db is not None:
+        if db is not None and self._counts_exactly(False):
             total = builder.count(db)
         return CursorPage(
             items=builder.serialize(page),
@@ -888,20 +969,22 @@ class Querymate(BaseModel):
         """Build and execute the query asynchronously with pagination metadata.
 
         Args:
-            db (AsyncSession): The SQLModel async database session.
-            model (ModelClass): The SQLModel model class to query.
+            db (AsyncSession): The async database session.
+            model (ModelClass): The model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        query_builder = await self._make_builder_async(model, scopes)
+        exact = self._counts_exactly(True)
+        query_builder = await self._make_builder_async(model, scopes, probe=not exact)
         data: list[Any] = await query_builder.fetch_async(db)
+        data, has_next_page = self._trim_probe(data, exact)
         serialized = query_builder.serialize(data)
-        total = await query_builder.count_async(db)
+        total = await query_builder.count_async(db) if exact else None
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=self._pagination(total, has_next_page),
         )
 
     async def run_raw_async(
@@ -1079,16 +1162,21 @@ class Querymate(BaseModel):
         extractor = GroupKeyExtractor(dialect=dialect)
 
         query_builder = self._make_builder(model, scopes, paginated=False)
+        exact = self._counts_exactly(True)
+        per_group_limit = self._page_size()
 
-        # Get all distinct group keys with their counts
-        group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
-
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        # One query for the keys and their counts, one for every group's page. With
+        # "count": "none" the first is skipped and the keys come from the pages.
+        group_keys = (
+            query_builder.get_distinct_group_keys(db, group_config, extractor)
+            if exact
+            else None
+        )
         items_by_key = query_builder.fetch_all_groups(
             db,
             group_config,
             extractor,
-            limit=per_group_limit,
+            limit=per_group_limit if exact else per_group_limit + 1,
             offset=self.offset or 0,
         )
         return self._assemble_grouped_response(
@@ -1098,7 +1186,7 @@ class Querymate(BaseModel):
     def _assemble_grouped_response(
         self,
         query_builder: QueryBuilder,
-        group_keys: list[tuple[Any, int]],
+        group_keys: list[tuple[Any, int]] | None,
         items_by_key: dict[Any, list[Any]],
         per_group_limit: int,
     ) -> dict[str, Any]:
@@ -1106,14 +1194,32 @@ class Querymate(BaseModel):
 
         Every group's page is already loaded; this only decides how many of them fit
         under MAX_LIMIT and marks the response truncated when some are dropped.
+
+        Args:
+            group_keys: Each group and its total, or None when the caller asked not to
+                count - in which case the groups are the ones that came back with rows,
+                and one probe row per group answers has_next_page instead.
         """
+        counted = group_keys is not None
+        # Without the counts query, a group is known only by having rows on this page.
+        # A group whose page is empty is therefore absent, which is the honest answer:
+        # nothing was counted, so nothing says it exists.
+        entries: list[tuple[Any, int | None]] = (
+            list(group_keys)
+            if group_keys is not None
+            else [(key, None) for key in items_by_key]
+        )
+
         max_total = settings.MAX_LIMIT
         total_fetched = 0
         truncated = False
         groups: list[GroupResult] = []
 
-        for group_key, group_total in group_keys:
+        for group_key, group_total in entries:
             items = items_by_key.get(group_key, [])
+            has_next_page = not counted and len(items) > per_group_limit
+            items = items[:per_group_limit]
+
             remaining = max_total - total_fetched
             if remaining <= 0:
                 truncated = True
@@ -1133,11 +1239,12 @@ class Querymate(BaseModel):
                         total=group_total,
                         limit=per_group_limit,
                         offset=self.offset or 0,
+                        has_next_page=has_next_page,
                     ),
                 )
             )
 
-        if len(groups) < len(group_keys):
+        if len(groups) < len(entries):
             truncated = True
 
         return GroupedResponse(groups=groups, truncated=truncated).model_dump()
@@ -1189,16 +1296,20 @@ class Querymate(BaseModel):
 
         query_builder = await self._make_builder_async(model, scopes, paginated=False)
 
-        group_keys = await query_builder.get_distinct_group_keys_async(
-            db, group_config, extractor
+        exact = self._counts_exactly(True)
+        per_group_limit = self._page_size()
+        group_keys = (
+            await query_builder.get_distinct_group_keys_async(
+                db, group_config, extractor
+            )
+            if exact
+            else None
         )
-
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
         items_by_key = await query_builder.fetch_all_groups_async(
             db,
             group_config,
             extractor,
-            limit=per_group_limit,
+            limit=per_group_limit if exact else per_group_limit + 1,
             offset=self.offset or 0,
         )
         return self._assemble_grouped_response(
@@ -1206,19 +1317,32 @@ class Querymate(BaseModel):
         )
 
     def _pagination_for_group(
-        self, total: int, limit: int, offset: int
+        self, total: int | None, limit: int, offset: int, has_next_page: bool = False
     ) -> PaginationInfo:
         """Build pagination metadata for a single group.
 
         Args:
-            total: Total items in the group.
+            total: Total items in the group, or None if the caller asked not to count.
             limit: Per-group limit.
             offset: Offset within the group.
+            has_next_page: Whether a probe row showed another page, used when there is
+                no total to derive it from.
 
         Returns:
             PaginationInfo metadata.
         """
         size = limit
+        if total is None:
+            page = max(1, (offset // size) + 1 if size > 0 else 1)
+            return PaginationInfo(
+                total=None,
+                page=page,
+                size=size,
+                pages=None,
+                previous_page=page - 1 if page > 1 else None,
+                next_page=page + 1 if has_next_page else None,
+                has_next_page=has_next_page,
+            )
         pages = (total + size - 1) // size if size > 0 else 1
         pages = max(1, pages)
         computed_page = (offset // size) + 1 if size > 0 else 1
@@ -1233,4 +1357,5 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+            has_next_page=next_page is not None,
         )

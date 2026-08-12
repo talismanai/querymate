@@ -547,12 +547,13 @@ def build_query_schema(
                     f"'{settings.OFFSET_PARAM_NAME}'."
                 ),
             },
-            settings.WITH_TOTAL_PARAM_NAME: {
-                "type": "boolean",
-                "default": False,
+            settings.COUNT_PARAM_NAME: {
+                "type": "string",
+                "enum": ["exact", "none"],
                 "description": (
-                    "Count the whole set alongside a cursor page. Off by default: "
-                    "that count is the work cursor pagination exists to avoid."
+                    "Whether to compute the total. 'exact' runs a count query; 'none' "
+                    "skips it and reports has_next_page from one probe row instead. "
+                    "Defaults to 'exact' for offset pages, 'none' for cursor pages."
                 ),
             },
             settings.JOIN_TYPE_PARAM_NAME: {

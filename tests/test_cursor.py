@@ -224,7 +224,7 @@ def test_total_is_absent_unless_asked_for(db: Session) -> None:
 def test_total_is_returned_when_asked_for(db: Session) -> None:
     _seed(db, count=5)
     page = Querymate(
-        select=["id"], sort=["id"], limit=2, with_total=True
+        select=["id"], sort=["id"], limit=2, count="exact"
     ).run_cursor_paginated(db, User)
 
     assert page.cursor.total == 5
@@ -375,7 +375,7 @@ async def test_cursor_total_async(async_db: AsyncSession) -> None:
     await async_db.commit()
 
     page = await Querymate(
-        select=["id"], sort=["id"], limit=1, with_total=True
+        select=["id"], sort=["id"], limit=1, count="exact"
     ).run_cursor_paginated_async(async_db, User)
 
     assert page.cursor.total == 1

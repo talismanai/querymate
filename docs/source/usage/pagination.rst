@@ -108,7 +108,54 @@ exactly the work cursor pagination exists to avoid:
 
 .. code-block:: text
 
-    /posts?q={"limit":20,"with_total":true}
+    /posts?q={"limit":20,"count":"exact"}
+
+Paying for the Total
+--------------------
+
+A count is a second pass over the filtered set, and on a large table it is often the
+most expensive part of a request. ``count`` decides whether it runs:
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``count``
+     - What happens
+   * - ``"exact"``
+     - A count query runs. ``total`` and ``pages`` are returned. Default for offset
+       pages.
+   * - ``"none"``
+     - No count query. One extra row is fetched and dropped, and ``has_next_page``
+       comes from whether it was there. Default for cursor pages.
+
+.. code-block:: text
+
+    /users?q={"limit":25,"count":"none"}
+
+.. code-block:: json
+
+    {
+      "items": [{"id": 1, "name": "John"}],
+      "pagination": {
+        "total": null,
+        "page": 1,
+        "size": 25,
+        "pages": null,
+        "previous_page": null,
+        "next_page": 2,
+        "has_next_page": true
+      }
+    }
+
+``has_next_page`` is reported in **both** modes — from the total when there is one,
+from the probe row when there is not. Leaving it out of the uncounted mode would let
+a client read the absent ``next_page`` as "this is the last page", which is a false
+statement rather than a missing one.
+
+Grouped queries take the same parameter. With ``"count": "none"`` the group-keys
+query is skipped entirely and each group reports ``has_next_page`` from its own probe
+row. Note the consequence: without counts, a group is known only by having rows on
+this page, so a group whose page is empty does not appear.
 
 Which to use
 ------------

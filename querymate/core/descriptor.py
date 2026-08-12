@@ -216,7 +216,7 @@ class DescriptorBuilder:
                     "group_by": settings.GROUP_BY_PARAM_NAME,
                     "join_type": settings.JOIN_TYPE_PARAM_NAME,
                     "cursor": settings.CURSOR_PARAM_NAME,
-                    "with_total": settings.WITH_TOTAL_PARAM_NAME,
+                    "count": settings.COUNT_PARAM_NAME,
                     "aggregate": settings.AGGREGATE_PARAM_NAME,
                     "having": settings.HAVING_PARAM_NAME,
                 },
