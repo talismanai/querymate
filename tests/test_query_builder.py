@@ -918,7 +918,9 @@ async def test_serialize_with_non_list_relationships_async(
 def test_apply_select_join_type_inner() -> None:
     """Test apply_select with inner join type generates correct SQL."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="inner")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="inner"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
     assert "JOIN post ON" in compiled
@@ -928,7 +930,9 @@ def test_apply_select_join_type_inner() -> None:
 def test_apply_select_join_type_left() -> None:
     """Test apply_select with left join type generates correct SQL."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
     assert "LEFT OUTER JOIN post ON" in compiled
@@ -937,7 +941,9 @@ def test_apply_select_join_type_left() -> None:
 def test_apply_select_join_type_outer() -> None:
     """Test apply_select with outer join type generates correct SQL (same as left)."""
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="outer")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="outer"
+    )
 
     compiled = str(query_builder.query.compile(compile_kwargs={"literal_binds": True}))
     assert "LEFT OUTER JOIN post ON" in compiled
@@ -971,7 +977,9 @@ def test_join_type_inner_excludes_records_without_relationships(db: Session) -> 
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="inner")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="inner"
+    )
     results = query_builder.fetch(db, User)
 
     assert len(results) == 1
@@ -994,7 +1002,9 @@ def test_join_type_left_includes_records_without_relationships(db: Session) -> N
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = query_builder.fetch(db, User)
 
     assert len(results) == 2
@@ -1018,7 +1028,9 @@ def test_join_type_left_serialization_empty_list(db: Session) -> None:
     db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = query_builder.fetch(db, User)
     serialized = query_builder.serialize(results)
 
@@ -1050,7 +1062,9 @@ async def test_join_type_left_async(async_db: AsyncSession) -> None:
     await async_db.commit()
 
     query_builder = QueryBuilder(model=User)
-    query_builder.apply_select(["id", "name", {"posts": ["id", "title"]}], join_type="left")
+    query_builder.apply_select(
+        ["id", "name", {"posts": ["id", "title"]}], join_type="left"
+    )
     results = await query_builder.fetch_async(async_db, User)
 
     assert len(results) == 2

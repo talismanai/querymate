@@ -1796,6 +1796,7 @@ dev = [
     { name = "sphinx-rtd-theme" },
     { name = "toml" },
     { name = "twine" },
+    { name = "types-toml" },
 ]
 
 [package.metadata]
@@ -1827,6 +1828,7 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.14" },
     { name = "toml", marker = "extra == 'dev'", specifier = ">=0.10.2" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.8.20240310" },
 ]
 provides-extras = ["dev"]
 
@@ -2346,6 +2348,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/92/3c/58f808a359700f39a967dffede33efeac809262c03303fa3eec6afff8f49/twine-7.0.0.tar.gz", hash = "sha256:85cdb29c518efef867360ae4acd4b0dfd61c8654a22fca08e6f8539f05022177", size = 215032, upload-time = "2026-07-27T15:59:00.825Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/08/ddcdc06225eaad6de0e48e1002b06d919dbde20582d0662c7af51308e5d6/twine-7.0.0-py3-none-any.whl", hash = "sha256:b854164df26db268af05f49aa5c0344b10e27a494343ff05b1e0bad3b135f5a7", size = 43204, upload-time = "2026-07-27T15:58:59.26Z" },
+]
+
+[[package]]
+name = "types-toml"
+version = "0.10.8.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/11/6ece999e91f2ccb848ab4420f3f4816e78ac0541f739e6864affdaaa5737/types_toml-0.10.8.20260518.tar.gz", hash = "sha256:80e10facd24fdeda9d5c672187d72be3ac284843788d67f5aae59e3e016db6fe", size = 9419, upload-time = "2026-05-18T06:02:16.719Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/25/489751806bf5c95e4007f8e17409199c54d31e49ffbea07c5729b1286c8e/types_toml-0.10.8.20260518-py3-none-any.whl", hash = "sha256:0e564ab05f6fde62a315b3b5a9b6624fda569399795d30a37e64705a70459303", size = 9669, upload-time = "2026-05-18T06:02:15.86Z" },
 ]
 
 [[package]]
