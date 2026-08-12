@@ -39,7 +39,6 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 🧮 Aggregation                | `count`/`sum`/`avg`/`min`/`max`, grouped, with `having`                    |
 | ➡️ Cursor Pagination           | Keyset pages that survive inserts, with a cursor that fits its query       |
 | 📮 Body Transport             | Send the same query as a POST body when it outgrows the URL                |
-| 💰 Cost Budget                | Score a query and refuse the ones a caller may not afford                  |
 | 🗝️ Cache Primitives           | Canonical plan, scope-aware cache key, ETag — bring your own store         |
 
 ---
@@ -709,17 +708,16 @@ open docs/_build/html/index.html
 
 ---
 
-### Cost Budgets and Caching
+### Caching
 
 Every query reduces to a canonical **plan**: two requests differing only in field order
-or in the order of `and` branches produce the same digest. The cost estimate and the
-cache key both come from it, so they cannot disagree about what "the same query" means.
+or in the order of `and` branches produce the same digest. The cache key is built from
+it, so the same query is never stored twice under different keys.
 
 ```python
 from querymate import cache_key
 
-# Refuse what this caller cannot afford (no ceiling by default).
-scopes = registry.bind(principal=me, db=db, budget=200, identity=f"user:{me.id}")
+scopes = registry.bind(principal=me, db=db, identity=f"user:{me.id}")
 
 # Bring your own store; QueryMate supplies the key.
 key = cache_key(q.plan(User), scopes)

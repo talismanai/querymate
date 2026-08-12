@@ -33,17 +33,6 @@ from querymate.core.openapi import (
     json_type_of,
     operators_for,
 )
-from querymate.core.plan import (
-    COST_AGGREGATE,
-    COST_BASE,
-    COST_COMPUTED,
-    COST_GROUP_BY,
-    COST_PER_ROWS,
-    COST_RELATIONSHIP,
-    COST_RELATIONSHIP_FILTER,
-    COST_RELATIONSHIP_SORT,
-    COST_TOTAL,
-)
 
 # The document format's own version, independent of the library's. Clients read this
 # to know how to interpret the rest; bump it only on a breaking change to the shape.
@@ -290,22 +279,6 @@ class DescriptorBuilder:
                     "stable_for": ["sort", "filter"],
                 },
             },
-            "cost": {
-                # Published so a client can estimate before sending, and so the
-                # weights a budget is expressed in are not a private detail.
-                "weights": {
-                    "base": COST_BASE,
-                    "relationship": COST_RELATIONSHIP,
-                    "relationship_filter": COST_RELATIONSHIP_FILTER,
-                    "relationship_sort": COST_RELATIONSHIP_SORT,
-                    "computed": COST_COMPUTED,
-                    "aggregate": COST_AGGREGATE,
-                    "group_by": COST_GROUP_BY,
-                    "total": COST_TOTAL,
-                    "rows_per_unit": COST_PER_ROWS,
-                },
-                "max": settings.MAX_QUERY_COST or None,
-            },
             "errors": {
                 "body": ["error", "detail"],
                 "types": [
@@ -317,7 +290,6 @@ class DescriptorBuilder:
                     "SelectionTooLargeError",
                     "InvalidCursorError",
                     "InvalidAggregateError",
-                    "BudgetExceededError",
                 ],
             },
             "resources": {

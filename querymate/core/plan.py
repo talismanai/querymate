@@ -3,8 +3,8 @@
 A query arrives as JSON, and the same query can arrive written several ways -
 ``["id", "name"]`` and ``["name", "id"]``, ``"+age"`` and ``"age"``, a filter's keys in
 any order. That is fine for a parser and fatal for anything that has to *identify* a
-query: a cache would store the same result under many keys, a budget could be evaded
-by reordering, and two log lines for the same work would not match.
+query: a cache would store the same result under many keys, and two log lines for the
+same work would not match.
 
 The plan is that identity. It is derived from a validated :class:`~querymate.Querymate`
 - never parsed from user input - and reduces it to a form where equivalent queries are
@@ -14,9 +14,6 @@ byte-identical:
 * selections sorted; ``and``/``or`` branches sorted, since their order cannot matter
 * sort entries left in order, since theirs does, with ``+`` normalised away
 * limit and offset spelled out rather than left implicit
-
-From that one form come two things that must not disagree: the cache key
-(:mod:`querymate.core.cache`) and the cost estimate below.
 
 The plan deliberately does not include *who* is asking. Authorization is resolved per
 request and changes what the same query returns, so anything identity-sensitive - a
@@ -31,44 +28,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from querymate.core.config import settings
-from querymate.core.exceptions import QuerymateError
-
-# Roughly what each part of a query costs the database, in arbitrary units. These are
-# an ordering, not a time estimate: the point is that a query asking for five levels of
-# relationships scores far above one asking for a page of columns, so a ceiling can be
-# set without predicting milliseconds.
-COST_BASE = 1
-# Each expanded relationship is one more round trip, and one nested deeper multiplies
-# the rows that trip returns.
-COST_RELATIONSHIP = 10
-# A relationship filter is a correlated EXISTS - cheap next to a join, not free.
-COST_RELATIONSHIP_FILTER = 5
-# Sorting by a related field is a correlated aggregate evaluated per candidate row.
-COST_RELATIONSHIP_SORT = 20
-# A computed field is a correlated subquery per row.
-COST_COMPUTED = 5
-COST_AGGREGATE = 2
-COST_GROUP_BY = 5
-# Counting the whole set is a second full scan of the filtered rows.
-COST_TOTAL = 10
-# Page size, charged per ten rows so a default page barely registers.
-COST_PER_ROWS = 10
-
-
-class BudgetExceededError(QuerymateError):
-    """A query whose estimated cost is above what this caller may spend.
-
-    A 400 rather than a 429: nothing is being rate-limited, and waiting will not help.
-    The query as written is too expensive, and the client has to ask for less.
-    """
-
-    def __init__(self, cost: int, budget: int) -> None:
-        super().__init__(
-            f"This query's estimated cost is {cost}, above the limit of {budget}. "
-            "Ask for fewer relationships, a smaller page, or split it up.",
-            cost=cost,
-            budget=budget,
-        )
 
 
 def _canonical(value: Any) -> Any:
@@ -129,7 +88,7 @@ def _canonical_filter(condition: Any) -> Any:
 
 @dataclass(frozen=True)
 class QueryPlan:
-    """A query reduced to its canonical form, with a digest and a cost.
+    """A query reduced to its canonical form, with a digest identifying it.
 
     Attributes:
         model: Name of the model queried.
@@ -153,71 +112,6 @@ class QueryPlan:
     def digest(self) -> str:
         """A short stable identifier for this query, independent of who asks."""
         return hashlib.sha256(self.canonical.encode()).hexdigest()[:32]
-
-    def cost(self) -> int:
-        """Estimate what this query will cost, in the units documented above.
-
-        An ordering rather than a prediction: it exists so a ceiling can distinguish
-        "a page of columns" from "five levels of relationships sorted by a related
-        field", which is the distinction a budget needs to make.
-        """
-        total = COST_BASE
-        relationships, computed = _selection_cost(self.body.get("select") or [], 1)
-        total += relationships + computed
-
-        for key in self.body.get("filter") or {}:
-            if "." in key:
-                total += COST_RELATIONSHIP_FILTER
-        for entry in self.body.get("sort") or []:
-            if isinstance(entry, str) and "." in entry:
-                total += COST_RELATIONSHIP_SORT
-
-        total += COST_AGGREGATE * len(self.body.get("aggregate") or {})
-        if self.body.get("group_by") is not None:
-            total += COST_GROUP_BY
-        if self.body.get("with_total"):
-            total += COST_TOTAL
-
-        limit = self.body.get("limit") or 0
-        total += int(limit) // COST_PER_ROWS
-        return total
-
-    def check_budget(self, budget: int | None) -> None:
-        """Refuse the query if it costs more than ``budget`` allows.
-
-        Raises:
-            BudgetExceededError: If the estimate is above the budget.
-        """
-        if not budget:
-            return
-        cost = self.cost()
-        if cost > budget:
-            raise BudgetExceededError(cost, budget)
-
-
-def _selection_cost(fields: Any, depth: int) -> tuple[int, int]:
-    """Cost of a selection tree: relationships weighted by depth, plus computed fields.
-
-    A relationship two levels down costs more than one at the root because the rows it
-    returns multiply with everything above it.
-    """
-    relationships = 0
-    computed = 0
-    for field in fields or []:
-        if isinstance(field, dict):
-            for _, value in field.items():
-                relationships += COST_RELATIONSHIP * depth
-                nested = value if isinstance(value, list) else value.get("select")
-                deeper_relationships, deeper_computed = _selection_cost(
-                    nested, depth + 1
-                )
-                relationships += deeper_relationships
-                computed += deeper_computed
-        elif isinstance(field, str) and field.endswith("_count"):
-            # Cheap to check by name and only ever an overestimate: a stored column
-            # called `login_count` is charged for a subquery it does not run.
-            computed += COST_COMPUTED
-    return relationships, computed
 
 
 def build_plan(query: Any, model_name: str) -> QueryPlan:

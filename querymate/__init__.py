@@ -94,7 +94,6 @@ from .core.grouping import GroupResult as GroupResult
 from .core.openapi import Exposed as Exposed
 from .core.openapi import ResourceRegistry as ResourceRegistry
 from .core.openapi import build_query_schema as build_query_schema
-from .core.plan import BudgetExceededError as BudgetExceededError
 from .core.plan import QueryPlan as QueryPlan
 from .core.plan import build_plan as build_plan
 from .core.query_builder import JoinType as JoinType

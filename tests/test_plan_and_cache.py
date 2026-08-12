@@ -1,8 +1,7 @@
-"""Tests for the query plan, the cost budget, and the cache primitives.
+"""Tests for the query plan and the cache primitives.
 
-Three things built on one another. The plan says when two requests are the same
-query; the budget refuses one that is too expensive; the cache key combines the plan
-with who is asking, which is the part that is a security property rather than a
+The plan says when two requests are the same query. The cache key combines it with
+who is asking, which is the part that is a security property rather than a
 performance one.
 """
 
@@ -18,7 +17,7 @@ from querymate.core.cache import (
     response_etag,
 )
 from querymate.core.config import settings
-from querymate.core.plan import BudgetExceededError, build_plan
+from querymate.core.plan import build_plan
 from querymate.core.querymate import Querymate
 from querymate.core.scope import ScopeRegistry
 from tests.models import Post, User
@@ -102,117 +101,6 @@ def test_the_plan_is_stable_across_runs() -> None:
     query = Querymate(select=["id", "name"], filter={"age": {"gt": 18}})
 
     assert query.plan(User).digest == build_plan(query, "User").digest
-
-
-# ---------------------------------------------------------------------------
-# Cost
-# ---------------------------------------------------------------------------
-
-
-def test_relationships_cost_more_than_columns() -> None:
-    columns = Querymate(select=["id", "name", "email", "age"]).plan(User).cost()
-    relationship = Querymate(select=["id", {"posts": ["title"]}]).plan(User).cost()
-
-    assert relationship > columns
-
-
-def test_depth_costs_more_than_breadth() -> None:
-    """Rows multiply with depth, so a nested expansion is worse than a wide one."""
-    wide = Querymate(select=[{"posts": ["title"]}, {"profile": ["bio"]}]).plan(User)
-    deep = Querymate(select=[{"posts": [{"comments": ["body"]}]}]).plan(User)
-
-    assert deep.cost() > wide.cost()
-
-
-def test_sorting_across_a_relationship_is_expensive() -> None:
-    """It is a correlated aggregate per candidate row."""
-    plain = Querymate(select=["id"], sort=["name"]).plan(User).cost()
-    related = Querymate(select=["id"], sort=["posts.title"]).plan(User).cost()
-
-    assert related > plain + 10
-
-
-def test_a_bigger_page_costs_more() -> None:
-    assert Querymate(select=["id"], limit=200).plan(User).cost() > (
-        Querymate(select=["id"], limit=10).plan(User).cost()
-    )
-
-
-# ---------------------------------------------------------------------------
-# Budget
-# ---------------------------------------------------------------------------
-
-
-def test_no_budget_by_default(db: Session) -> None:
-    """A ceiling that fits one application's hardware is wrong for another's."""
-    _seed(db)
-
-    assert Querymate(select=["id"]).run(db, User) == [{"id": 1}, {"id": 2}]
-
-
-def test_a_query_over_budget_is_refused(db: Session) -> None:
-    _seed(db)
-    scopes = ScopeRegistry()
-    scopes.allow_all(User).allow_all(Post)
-    bound = scopes.bind(principal=None, db=db, budget=5)
-
-    with pytest.raises(BudgetExceededError) as raised:
-        Querymate(select=["id", {"posts": ["title"]}]).run(db, User, scopes=bound)
-
-    assert raised.value.status_code == 400
-    assert raised.value.context["budget"] == 5
-
-
-def test_a_query_within_budget_runs(db: Session) -> None:
-    _seed(db)
-    scopes = ScopeRegistry()
-    scopes.allow_all(User)
-    bound = scopes.bind(principal=None, db=db, budget=100)
-
-    assert Querymate(select=["id"]).run(db, User, scopes=bound) == [
-        {"id": 1},
-        {"id": 2},
-    ]
-
-
-def test_the_budget_is_per_principal(db: Session) -> None:
-    """An internal service can be allowed what a public caller is not."""
-    _seed(db)
-    scopes = ScopeRegistry()
-    scopes.allow_all(User).allow_all(Post)
-    query = Querymate(select=["id", {"posts": ["title"]}])
-
-    generous = scopes.bind(principal="service", db=db, budget=1000)
-    assert query.run(db, User, scopes=generous) is not None
-
-    with pytest.raises(BudgetExceededError):
-        query.run(db, User, scopes=scopes.bind(principal="public", db=db, budget=5))
-
-
-def test_the_global_ceiling_applies_without_scopes(
-    db: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _seed(db)
-    monkeypatch.setattr(settings, "MAX_QUERY_COST", 5)
-
-    with pytest.raises(BudgetExceededError):
-        Querymate(select=["id", {"posts": ["title"]}]).run(db, User)
-
-
-def test_the_budget_covers_cursor_and_aggregate_paths(
-    db: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Every entry point, or the ceiling is a suggestion."""
-    _seed(db)
-    monkeypatch.setattr(settings, "MAX_QUERY_COST", 3)
-    expensive = Querymate(select=["id", {"posts": ["title"]}], limit=200)
-
-    with pytest.raises(BudgetExceededError):
-        expensive.run_cursor_paginated(db, User)
-    with pytest.raises(BudgetExceededError):
-        expensive.model_copy(
-            update={"aggregate": {"n": {"count": "*"}}}
-        ).run_aggregated(db, User)
 
 
 # ---------------------------------------------------------------------------

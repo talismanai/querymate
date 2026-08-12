@@ -34,17 +34,6 @@ class QueryMateSettings(BaseSettings):
         default="offset", description="Offset parameter name"
     )
 
-    # Cost budget
-    MAX_QUERY_COST: int = Field(
-        default=0,
-        description=(
-            "Refuse a query whose estimated cost exceeds this. 0 disables the ceiling, "
-            "which is the default: a number that fits one application's hardware is "
-            "wrong for another's, so it is opt-in. Per-principal budgets override it "
-            "via ScopeRegistry.bind(budget=...)."
-        ),
-    )
-
     # Cursor pagination
     CURSOR_PARAM_NAME: str = Field(
         default="cursor", description="Cursor parameter name"

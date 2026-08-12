@@ -555,9 +555,8 @@ class Querymate(BaseModel):
         """Reduce this query to its canonical plan.
 
         The plan is what identifies a query: two requests that differ only in the
-        order of their fields or filter branches produce the same one. Cache keys and
-        cost estimates both come from it, so they cannot disagree about what "the same
-        query" means. See :mod:`querymate.core.plan`.
+        order of their fields or filter branches produce the same one. It is what a
+        cache key is built from. See :mod:`querymate.core.plan`.
 
         Example:
             ```python
@@ -568,22 +567,6 @@ class Querymate(BaseModel):
         """
         del scopes  # accepted for symmetry with the run methods; the plan is not scoped
         return build_plan(self, self._resolve_model(model).__name__)
-
-    def _enforce_budget(
-        self, model: type[T] | None, scopes: BoundScopes | None
-    ) -> None:
-        """Refuse a query that costs more than this caller may spend.
-
-        The per-principal budget wins over the global ceiling, so an internal service
-        can be allowed what a public caller is not. With neither set - the default -
-        this does nothing and costs one attribute lookup.
-        """
-        budget = getattr(scopes, "budget", None)
-        if budget is None:
-            budget = settings.MAX_QUERY_COST
-        if not budget:
-            return
-        self.plan(model).check_budget(budget)
 
     def _make_builder(
         self,
@@ -603,7 +586,6 @@ class Querymate(BaseModel):
         Returns:
             QueryBuilder: The built query builder.
         """
-        self._enforce_budget(model, scopes)
         query_builder = QueryBuilder(
             model=self._resolve_model(model),
             scopes=scopes,
@@ -629,7 +611,6 @@ class Querymate(BaseModel):
         paginated: bool = True,
     ) -> QueryBuilder:
         """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
-        self._enforce_budget(model, scopes)
         query_builder = QueryBuilder(
             model=self._resolve_model(model),
             scopes=scopes,
@@ -794,7 +775,6 @@ class Querymate(BaseModel):
         self, model: type[T] | None, scopes: BoundScopes | None
     ) -> tuple[QueryBuilder, int]:
         """Build the query for one cursor page, and return the page size asked for."""
-        self._enforce_budget(model, scopes)
         builder = QueryBuilder(
             model=self._resolve_model(model),
             scopes=scopes,
@@ -808,7 +788,6 @@ class Querymate(BaseModel):
         self, model: type[T] | None, scopes: BoundScopes | None
     ) -> tuple[QueryBuilder, int]:
         """Async counterpart of :meth:`_cursor_builder`."""
-        self._enforce_budget(model, scopes)
         builder = QueryBuilder(
             model=self._resolve_model(model),
             scopes=scopes,
@@ -1016,7 +995,6 @@ class Querymate(BaseModel):
         the root model decide. The caller resolves the scopes, since only it knows
         whether the resolvers may be awaited.
         """
-        self._enforce_budget(model, scopes)
         return QueryBuilder(
             model=self._resolve_model(model),
             scopes=scopes,
