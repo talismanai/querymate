@@ -183,6 +183,7 @@ class QueryBuilder:
             return self
         for model in self._planned_models(fields):
             self.scopes.condition_for(model)
+            self.scopes.grants_for(model)
         return self
 
     async def prepare_scopes_async(
@@ -193,6 +194,7 @@ class QueryBuilder:
             return self
         for model in self._planned_models(fields):
             await self.scopes.condition_for_async(model)
+            await self.scopes.grants_for_async(model)
         return self
 
     def _scope_for(self, model: type[SQLModel]) -> Any | None:
@@ -234,52 +236,117 @@ class QueryBuilder:
         if total_nodes > settings.MAX_SELECT_NODES:
             raise SelectionTooLargeError(total_nodes, settings.MAX_SELECT_NODES)
 
-    def _enforce_exposure(
+    def _check_field(
         self,
+        model: type[SQLModel],
+        field: str,
+        usage: str,
+        exposure: "ResolvedExposure | None",
+    ) -> None:
+        """Reject a field the endpoint does not expose, or this principal may not use.
+
+        Two independent restrictions, both narrowing: the endpoint's static surface
+        and the caller's per-request grants. Neither can widen the other.
+        """
+        if exposure is not None:
+            exposure.check_field(field, usage=usage)
+
+        grants = self.scopes.grants_for(model) if self.scopes is not None else None
+        if grants is None:
+            return
+        allowed = grants.allowed(usage)
+        if allowed is not None and field not in allowed:
+            raise UnknownFieldError(field, model.__name__, sorted(allowed))
+
+    def _check_relationship(
+        self,
+        model: type[SQLModel],
+        name: str,
+        exposure: "ResolvedExposure | None",
+    ) -> tuple[type[SQLModel], "ResolvedExposure | None"]:
+        """Validate a relationship hop, returning the target model and its exposure."""
+        child_exposure = (
+            exposure.check_relationship(name) if exposure is not None else None
+        )
+
+        mapper: Mapper = inspect(model)
+        relationship = mapper.relationships.get(name)
+        if relationship is None:
+            raise UnknownRelationshipError(
+                name, model.__name__, set(mapper.relationships.keys())
+            )
+
+        grants = self.scopes.grants_for(model) if self.scopes is not None else None
+        if (
+            grants is not None
+            and grants.expandable is not None
+            and name not in grants.expandable
+        ):
+            raise UnknownRelationshipError(
+                name, model.__name__, sorted(grants.expandable)
+            )
+
+        return relationship.mapper.class_, child_exposure
+
+    def _enforce_selection(
+        self,
+        model: type[SQLModel],
         fields: Sequence[NormalizedSelection],
         exposure: "ResolvedExposure | None",
     ) -> None:
-        """Reject a selection reaching outside the endpoint's declared surface."""
-        if exposure is None:
-            return
+        """Reject a selection reaching outside what this caller may read."""
         for field in fields:
             if isinstance(field, str):
-                exposure.check_field(field, usage="selected")
+                self._check_field(model, field, "selected", exposure)
             elif isinstance(field, dict):
                 for relationship_name, nested in field.items():
-                    child = exposure.check_relationship(relationship_name)
-                    self._enforce_exposure(nested, child)
+                    child_model, child_exposure = self._check_relationship(
+                        model, relationship_name, exposure
+                    )
+                    self._enforce_selection(child_model, nested, child_exposure)
 
-    def _enforce_filter_exposure(
-        self, filter_dict: dict[str, Any], exposure: "ResolvedExposure | None"
+    def _enforce_filter_access(
+        self,
+        model: type[SQLModel],
+        filter_dict: dict[str, Any],
+        exposure: "ResolvedExposure | None",
     ) -> None:
-        """Reject a filter naming a field the endpoint does not expose."""
-        if exposure is None:
-            return
+        """Reject a filter naming a field this caller may not filter on."""
         for key, condition in filter_dict.items():
             if key in ("and", "or"):
                 for nested in condition:
-                    self._enforce_filter_exposure(nested, exposure)
+                    self._enforce_filter_access(model, nested, exposure)
                 continue
             head, _, remainder = key.partition(".")
             if remainder:
-                child = exposure.check_relationship(head)
-                self._enforce_filter_exposure({remainder: condition}, child)
+                child_model, child_exposure = self._check_relationship(
+                    model, head, exposure
+                )
+                self._enforce_filter_access(
+                    child_model, {remainder: condition}, child_exposure
+                )
             else:
-                exposure.check_field(head, usage="filtered")
+                self._check_field(model, head, "filtered", exposure)
 
-    def _enforce_sort_exposure(
-        self, field_path: str, exposure: "ResolvedExposure | None"
+    def _enforce_sort_access(
+        self,
+        model: type[SQLModel],
+        field_path: str,
+        exposure: "ResolvedExposure | None",
     ) -> None:
-        """Reject a sort naming a field the endpoint does not expose."""
-        if exposure is None:
-            return
+        """Reject a sort naming a field this caller may not sort on."""
         head, _, remainder = field_path.partition(".")
         if remainder:
-            child = exposure.check_relationship(head)
-            self._enforce_sort_exposure(remainder, child)
+            child_model, child_exposure = self._check_relationship(
+                model, head, exposure
+            )
+            self._enforce_sort_access(child_model, remainder, child_exposure)
         else:
-            exposure.check_field(head, usage="sorted")
+            self._check_field(model, head, "sorted", exposure)
+
+    def _access_is_restricted(self) -> bool:
+        """Whether any access rule applies, so enforcement can be skipped when none do."""
+        return self.exposure is not None or self.scopes is not None
 
     def _normalize_select_fields(
         self,
@@ -556,7 +623,8 @@ class QueryBuilder:
             fields = list(self.model.model_fields.keys())
         normalized_fields = self._normalize_select_fields(self.model, fields)
         self._enforce_selection_bounds(normalized_fields)
-        self._enforce_exposure(normalized_fields, self.exposure)
+        if self._access_is_restricted():
+            self._enforce_selection(self.model, normalized_fields, self.exposure)
         self.select = normalized_fields
 
         self.query = (
@@ -602,7 +670,8 @@ class QueryBuilder:
         """
         if not filter_dict:
             return self
-        self._enforce_filter_exposure(filter_dict, self.exposure)
+        if self._access_is_restricted():
+            self._enforce_filter_access(self.model, filter_dict, self.exposure)
         self.filter = filter_dict
         filter_builder = FilterBuilder(self.model)
         filters = filter_builder.build(filter_dict)
@@ -629,7 +698,8 @@ class QueryBuilder:
         Raises:
             AttributeError: If any segment of the path cannot be resolved.
         """
-        self._enforce_sort_exposure(field_path, self.exposure)
+        if self._access_is_restricted():
+            self._enforce_sort_access(self.model, field_path, self.exposure)
 
         parts = field_path.split(".")
         if len(parts) == 1:

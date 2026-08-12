@@ -83,6 +83,52 @@ class UnscopedModelError(QuerymateError):
         )
 
 
+class FieldGrants:
+    """Which fields of one model a particular principal may use.
+
+    ``Exposed`` decides what an endpoint can reveal to anyone; this decides what *this*
+    caller may see of it, and so must be resolved per request. Deciding it often needs
+    the database - whether the principal is an admin, whether they own the record's
+    organisation - which is why it is a resolver rather than a declaration.
+
+    Every attribute is optional; ``None`` means "no further restriction". Grants can
+    only narrow the exposed surface, never widen it.
+
+    Attributes:
+        readable: Fields that may be selected.
+        filterable: Fields that may be filtered on. Defaults to ``readable``, so a
+            caller cannot probe a field they are not allowed to read.
+        sortable: Fields that may be sorted on. Defaults to ``readable``.
+        expandable: Relationships that may be expanded.
+    """
+
+    def __init__(
+        self,
+        readable: set[str] | list[str] | None = None,
+        filterable: set[str] | list[str] | None = None,
+        sortable: set[str] | list[str] | None = None,
+        expandable: set[str] | list[str] | None = None,
+    ) -> None:
+        self.readable = set(readable) if readable is not None else None
+        # Falling back to readable is deliberate: filtering on a field you cannot read
+        # still leaks its contents, one comparison at a time.
+        self.filterable = set(filterable) if filterable is not None else self.readable
+        self.sortable = set(sortable) if sortable is not None else self.readable
+        self.expandable = set(expandable) if expandable is not None else None
+
+    def allowed(self, usage: str) -> set[str] | None:
+        """Return the field set governing a usage, or None if unrestricted."""
+        return {
+            "selected": self.readable,
+            "filtered": self.filterable,
+            "sorted": self.sortable,
+        }[usage]
+
+
+# A grants resolver mirrors a scope resolver: same context, same once-per-request cost.
+GrantsResolver = Callable[["ScopeContext"], "FieldGrants | Awaitable[FieldGrants]"]
+
+
 class ScopeCache:
     """Per-request memoization shared by every resolver of a single bound registry.
 
@@ -141,11 +187,55 @@ class BoundScopes:
         resolvers: dict[type[SQLModel], ScopeResolver | str],
         context: ScopeContext,
         strict: bool,
+        grant_resolvers: dict[type[SQLModel], GrantsResolver] | None = None,
     ) -> None:
         self._resolvers = resolvers
         self._context = context
         self._strict = strict
         self._resolved: dict[type[SQLModel], ScopeCondition] = {}
+        self._grant_resolvers = grant_resolvers or {}
+        self._resolved_grants: dict[type[SQLModel], FieldGrants | None] = {}
+
+    def grants_for(self, model: type[SQLModel]) -> FieldGrants | None:
+        """Return this principal's field grants for ``model``, or None if unrestricted.
+
+        Resolved once per model per request, like a scope.
+        """
+        if model in self._resolved_grants:
+            return self._resolved_grants[model]
+
+        resolver = self._grant_resolvers.get(model)
+        if resolver is None:
+            self._resolved_grants[model] = None
+            return None
+
+        grants = resolver(self._context)
+        if _inspect.isawaitable(grants):
+            close = getattr(grants, "close", None)
+            if close is not None:
+                close()
+            raise RuntimeError(
+                f"Field grants resolver for '{model.__name__}' is async; use the "
+                f"async query methods with it."
+            )
+        self._resolved_grants[model] = grants
+        return grants
+
+    async def grants_for_async(self, model: type[SQLModel]) -> FieldGrants | None:
+        """Async counterpart of :meth:`grants_for`; accepts sync or async resolvers."""
+        if model in self._resolved_grants:
+            return self._resolved_grants[model]
+
+        resolver = self._grant_resolvers.get(model)
+        if resolver is None:
+            self._resolved_grants[model] = None
+            return None
+
+        grants: Any = resolver(self._context)
+        if _inspect.isawaitable(grants):
+            grants = await grants
+        self._resolved_grants[model] = cast(FieldGrants, grants)
+        return cast(FieldGrants, grants)
 
     @property
     def context(self) -> ScopeContext:
@@ -247,6 +337,7 @@ class ScopeRegistry:
 
     def __init__(self) -> None:
         self._resolvers: dict[type[SQLModel], ScopeResolver | str] = {}
+        self._grant_resolvers: dict[type[SQLModel], GrantsResolver] = {}
 
     def register(self, model: type[T]) -> Callable[[ScopeResolver], ScopeResolver]:
         """Register the scope resolver for ``model``. Usable as a decorator.
@@ -267,6 +358,37 @@ class ScopeRegistry:
     def add(self, model: type[T], resolver: ScopeResolver) -> "ScopeRegistry":
         """Register ``resolver`` for ``model`` without decorator syntax."""
         self._resolvers[model] = resolver
+        return self
+
+    def fields(self, model: type[T]) -> Callable[[GrantsResolver], GrantsResolver]:
+        """Register which fields of ``model`` a principal may use. Usable as a decorator.
+
+        Row scopes decide *which records*; this decides *which columns of them*. Both
+        are resolved per request from the same context, so a grants resolver may query
+        the database and share the scope cache.
+
+        Example:
+            ```python
+            @scopes.fields(User)
+            def user_fields(ctx):
+                admin = ctx.cache.get_or_set(
+                    "is_admin", lambda: my_authz.is_admin(ctx.db, ctx.principal)
+                )
+                return FieldGrants(
+                    readable={"id", "name"} | ({"email"} if admin else set())
+                )
+            ```
+        """
+
+        def decorator(resolver: GrantsResolver) -> GrantsResolver:
+            self._grant_resolvers[model] = resolver
+            return resolver
+
+        return decorator
+
+    def add_fields(self, model: type[T], resolver: GrantsResolver) -> "ScopeRegistry":
+        """Register a field-grants resolver without decorator syntax."""
+        self._grant_resolvers[model] = resolver
         return self
 
     def allow_all(self, model: type[T]) -> "ScopeRegistry":
@@ -300,5 +422,8 @@ class ScopeRegistry:
         """
         context = ScopeContext(principal=principal, db=db, cache=ScopeCache())
         return BoundScopes(
-            resolvers=dict(self._resolvers), context=context, strict=strict
+            resolvers=dict(self._resolvers),
+            context=context,
+            strict=strict,
+            grant_resolvers=dict(self._grant_resolvers),
         )
