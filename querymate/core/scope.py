@@ -188,10 +188,17 @@ class BoundScopes:
         context: ScopeContext,
         strict: bool,
         grant_resolvers: dict[type[SQLModel], GrantsResolver] | None = None,
+        identity: str | None = None,
+        budget: int | None = None,
     ) -> None:
         self._resolvers = resolvers
         self._context = context
         self._strict = strict
+        # What the cached rows of this request belong to, and what this principal may
+        # spend. Both belong here because both are properties of who is asking, which
+        # is exactly what binding a registry establishes.
+        self.identity = identity
+        self.budget = budget
         self._resolved: dict[type[SQLModel], ScopeCondition] = {}
         self._grant_resolvers = grant_resolvers or {}
         self._resolved_grants: dict[type[SQLModel], FieldGrants | None] = {}
@@ -406,7 +413,12 @@ class ScopeRegistry:
         return set(self._resolvers.keys())
 
     def bind(
-        self, principal: Any = None, db: Any = None, strict: bool = True
+        self,
+        principal: Any = None,
+        db: Any = None,
+        strict: bool = True,
+        identity: str | None = None,
+        budget: int | None = None,
     ) -> BoundScopes:
         """Bind this registry to one request's principal and session.
 
@@ -416,6 +428,14 @@ class ScopeRegistry:
             db: The active database session, so resolvers can query access rules.
             strict: When True (default), querying a model with no registered resolver
                 raises :class:`UnscopedModelError` rather than returning unfiltered rows.
+            identity: What cached results of this request belong to. Must name
+                everything the resolvers depend on - the user, or their team, or their
+                tenant. Only needed if the application caches; see
+                :mod:`querymate.core.cache`.
+            budget: The most this principal may spend on one query, in the units of
+                :meth:`querymate.core.plan.QueryPlan.cost`. Overrides
+                ``QUERYMATE_MAX_QUERY_COST`` for this request, so an internal service
+                can be allowed what a public caller is not.
 
         Returns:
             BoundScopes: A short-lived object to pass as ``scopes=`` to the query methods.
@@ -426,4 +446,6 @@ class ScopeRegistry:
             context=context,
             strict=strict,
             grant_resolvers=dict(self._grant_resolvers),
+            identity=identity,
+            budget=budget,
         )

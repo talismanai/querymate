@@ -16,6 +16,7 @@ This guide covers the main features and usage patterns of QueryMate.
    authorization
    openapi
    descriptor
+   caching
    errors
    serialization
    predicates

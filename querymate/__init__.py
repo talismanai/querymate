@@ -7,6 +7,10 @@ __version__ = "0.5.2"  # Update this with your actual version
 from .core.aggregate import AGGREGATE_FUNCTIONS as AGGREGATE_FUNCTIONS
 from .core.aggregate import Aggregation as Aggregation
 from .core.aggregate import InvalidAggregateError as InvalidAggregateError
+from .core.cache import MissingScopeIdentityError as MissingScopeIdentityError
+from .core.cache import cache_key as cache_key
+from .core.cache import is_not_modified as is_not_modified
+from .core.cache import response_etag as response_etag
 from .core.computed import ComputedRegistry as ComputedRegistry
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
@@ -90,6 +94,9 @@ from .core.grouping import GroupResult as GroupResult
 from .core.openapi import Exposed as Exposed
 from .core.openapi import ResourceRegistry as ResourceRegistry
 from .core.openapi import build_query_schema as build_query_schema
+from .core.plan import BudgetExceededError as BudgetExceededError
+from .core.plan import QueryPlan as QueryPlan
+from .core.plan import build_plan as build_plan
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
 from .core.querymate import Querymate as Querymate
