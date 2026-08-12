@@ -247,6 +247,83 @@ Grouped queries have specific pagination semantics:
         limit=10,
     )
 
+Window Grouping Strategy
+------------------------
+
+Grouped queries use the legacy strategy by default. The legacy path first fetches
+group keys and counts, then fetches items for each group.
+
+For top-N-per-group views, opt into the window strategy:
+
+.. code-block:: python
+
+    querymate = Querymate(
+        select=["id", "name", "status"],
+        group_by="status",
+        sort=["-created_at"],
+        grouping={
+            "strategy": "window",
+            "per_group_limit": 50,
+            "per_group_offset": 0,
+        },
+    )
+    result = await querymate.run_grouped_async(db, User)
+
+The window strategy uses SQL window functions to fetch the requested items across
+groups in one query. It supports simple model-field selections, simple field
+grouping, and date-granularity grouping. Relationship selections and relationship
+group fields are unsupported in the first release; they fall back to the legacy
+strategy by default.
+
+Set ``grouping.fallback = "error"`` to fail instead of falling back:
+
+.. code-block:: python
+
+    querymate = Querymate(
+        select=["id", "name", {"posts": ["id", "title"]}],
+        group_by="status",
+        grouping={"strategy": "window", "fallback": "error"},
+    )
+
+Use ``grouping.include_counts = False`` to avoid exact per-group totals. QueryMate
+fetches one extra item per group and returns ``has_next_page`` in each group's
+pagination metadata:
+
+.. code-block:: python
+
+    querymate = Querymate(
+        select=["id", "name", "status"],
+        group_by="status",
+        sort=["id"],
+        grouping={
+            "strategy": "window",
+            "include_counts": False,
+            "per_group_limit": 25,
+        },
+    )
+
+.. code-block:: json
+
+    {
+      "groups": [
+        {
+          "key": "active",
+          "items": [{"id": 1, "name": "Alice", "status": "active"}],
+          "pagination": {
+            "total": null,
+            "page": 1,
+            "size": 25,
+            "pages": null,
+            "previous_page": null,
+            "next_page": 2,
+            "has_next_page": true,
+            "mode": "has_next"
+          }
+        }
+      ],
+      "truncated": false
+    }
+
 When ``MAX_LIMIT`` is Reached
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -312,6 +389,5 @@ Best Practices
 * Use date granularity that matches your use case (don't use ``minute`` if ``day`` suffices)
 * Consider timezone when displaying date-grouped data to users
 * Monitor the ``truncated`` flag and adjust ``limit`` or use filters if frequently truncated
-
 
 

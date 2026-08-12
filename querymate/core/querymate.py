@@ -1,17 +1,21 @@
 import json
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Request
 from fastapi.datastructures import QueryParams
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import Session, SQLModel
+from sqlalchemy.orm import Mapper
+from sqlmodel import Session, SQLModel, inspect
 
 from querymate.core.config import settings
 from querymate.core.grouping import (
     GroupByConfig,
     GroupedResponse,
+    GroupingOptions,
     GroupKeyExtractor,
     GroupResult,
 )
@@ -26,6 +30,16 @@ R = TypeVar("R")
 FieldSelection = str | dict[str, list[str]]
 FilterCondition = dict[str, Any]
 GroupByParam = str | dict[str, Any]
+PaginationMode = Literal["full", "none", "has_next"]
+
+
+class PaginationOptions(BaseModel):
+    """Opt-in pagination execution controls."""
+
+    mode: PaginationMode = Field(
+        default="full",
+        description="Pagination mode. 'full' preserves existing count behavior.",
+    )
 
 
 class Querymate(BaseModel):
@@ -120,6 +134,14 @@ class Querymate(BaseModel):
         description="Join type for relationship queries. Options: 'inner' (default), 'left', 'outer'",
         alias=settings.JOIN_TYPE_PARAM_NAME,
     )
+    pagination: PaginationOptions = Field(
+        default_factory=PaginationOptions,
+        description="Opt-in pagination execution controls",
+    )
+    grouping: GroupingOptions = Field(
+        default_factory=GroupingOptions,
+        description="Opt-in grouped query execution controls",
+    )
 
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
@@ -173,9 +195,7 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return urlencode(
-            {settings.QUERY_PARAM_NAME: self.model_dump_json(by_alias=True)}
-        )
+        return urlencode({settings.QUERY_PARAM_NAME: self._query_payload_json()})
 
     def to_query_param(self) -> str:
         """Convert the QueryMate instance to a query string.
@@ -183,7 +203,16 @@ class Querymate(BaseModel):
         Returns:
             str: The URL-encoded query string.
         """
-        return quote(self.model_dump_json(by_alias=True))
+        return quote(self._query_payload_json())
+
+    def _query_payload_json(self) -> str:
+        """Serialize query payloads without default-only opt-in config blocks."""
+        payload = self.model_dump(by_alias=True, mode="json")
+        if self.pagination.mode == "full":
+            payload.pop("pagination", None)
+        if self.grouping == GroupingOptions():
+            payload.pop("grouping", None)
+        return json.dumps(payload, separators=(",", ":"))
 
     def _pagination(self, total: int) -> PaginationInfo:
         """Build a pagination dictionary from current state and total count.
@@ -212,6 +241,27 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+        )
+
+    def _pagination_without_total(
+        self, mode: Literal["none", "has_next"], has_next_page: bool | None
+    ) -> PaginationInfo:
+        """Build pagination metadata for modes that intentionally skip counts."""
+        size = self.limit or settings.DEFAULT_LIMIT
+        offset_val = self.offset or settings.DEFAULT_OFFSET
+        page = (offset_val // size) + 1 if size > 0 else 1
+        previous_page = page - 1 if page > 1 else None
+        next_page = page + 1 if has_next_page else None
+
+        return PaginationInfo(
+            total=None,
+            page=page,
+            size=size,
+            pages=None,
+            previous_page=previous_page,
+            next_page=next_page,
+            has_next_page=has_next_page,
+            mode=mode,
         )
 
     def run_raw(self, db: Session, model: type[T]) -> list[T]:
@@ -297,21 +347,40 @@ class Querymate(BaseModel):
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
         query_builder = QueryBuilder(model=model)
+        query_limit = self.limit
+        if self.pagination.mode == "has_next" and query_limit is not None:
+            query_limit = query_limit + 1
+
         query_builder.build(
             select=self.select,
             filter=self.filter,
             sort=self.sort,
-            limit=self.limit,
+            limit=query_limit,
             offset=self.offset,
             join_type=self.join_type,
         )
         data = query_builder.fetch(db, model)
+
+        has_next_page: bool | None = None
+        if self.pagination.mode == "has_next":
+            page_size = self.limit or settings.DEFAULT_LIMIT
+            has_next_page = len(data) > page_size
+            data = data[:page_size]
+
         serialized = query_builder.serialize(data)
-        total = query_builder.count(db)
+
+        if self.pagination.mode == "full":
+            total = query_builder.count(db)
+            pagination = self._pagination(total)
+        else:
+            pagination = self._pagination_without_total(
+                self.pagination.mode,
+                has_next_page,
+            )
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=pagination,
         )
 
     async def run_async(
@@ -373,21 +442,40 @@ class Querymate(BaseModel):
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
         query_builder = QueryBuilder(model=model)
+        query_limit = self.limit
+        if self.pagination.mode == "has_next" and query_limit is not None:
+            query_limit = query_limit + 1
+
         query_builder.build(
             select=self.select,
             filter=self.filter,
             sort=self.sort,
-            limit=self.limit,
+            limit=query_limit,
             offset=self.offset,
             join_type=self.join_type,
         )
         data = await query_builder.fetch_async(db, model)
+
+        has_next_page: bool | None = None
+        if self.pagination.mode == "has_next":
+            page_size = self.limit or settings.DEFAULT_LIMIT
+            has_next_page = len(data) > page_size
+            data = data[:page_size]
+
         serialized = query_builder.serialize(data)
-        total = await query_builder.count_async(db)
+
+        if self.pagination.mode == "full":
+            total = await query_builder.count_async(db)
+            pagination = self._pagination(total)
+        else:
+            pagination = self._pagination_without_total(
+                self.pagination.mode,
+                has_next_page,
+            )
 
         return PaginatedResponse(
             items=serialized,
-            pagination=self._pagination(total),
+            pagination=pagination,
         )
 
     async def run_raw_async(self, db: AsyncSession, model: type[T]) -> list[T]:
@@ -472,6 +560,18 @@ class Querymate(BaseModel):
             results = querymate.run_grouped(db, Task)
             ```
         """
+        if self.grouping.strategy == "window":
+            return self._run_grouped_window(db, model, dialect=dialect)
+        return self._run_grouped_legacy(db, model, dialect=dialect)
+
+    def _run_grouped_legacy(
+        self,
+        db: Session,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Run the original grouped query strategy."""
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
@@ -486,7 +586,10 @@ class Querymate(BaseModel):
         # Get all distinct group keys with their counts
         group_keys = query_builder.get_distinct_group_keys(db, group_config, extractor)
 
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        per_group_limit = (
+            self.grouping.per_group_limit or self.limit or settings.DEFAULT_LIMIT
+        )
+        per_group_offset = self.grouping.per_group_offset or self.offset or 0
         max_total = settings.MAX_LIMIT
         total_fetched = 0
         truncated = False
@@ -513,7 +616,7 @@ class Querymate(BaseModel):
                 extractor,
                 group_key,
                 limit=effective_limit,
-                offset=self.offset or 0,
+                offset=per_group_offset,
                 join_type=self.join_type,
             )
 
@@ -524,7 +627,7 @@ class Querymate(BaseModel):
             pagination = self._pagination_for_group(
                 total=group_total,
                 limit=per_group_limit,
-                offset=self.offset or 0,
+                offset=per_group_offset,
             )
 
             groups.append(
@@ -583,6 +686,18 @@ class Querymate(BaseModel):
             results = await querymate.run_grouped_async(db, Task)
             ```
         """
+        if self.grouping.strategy == "window":
+            return await self._run_grouped_window_async(db, model, dialect=dialect)
+        return await self._run_grouped_legacy_async(db, model, dialect=dialect)
+
+    async def _run_grouped_legacy_async(
+        self,
+        db: AsyncSession,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        """Run the original grouped query strategy asynchronously."""
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
@@ -598,7 +713,10 @@ class Querymate(BaseModel):
             db, group_config, extractor
         )
 
-        per_group_limit = self.limit or settings.DEFAULT_LIMIT
+        per_group_limit = (
+            self.grouping.per_group_limit or self.limit or settings.DEFAULT_LIMIT
+        )
+        per_group_offset = self.grouping.per_group_offset or self.offset or 0
         max_total = settings.MAX_LIMIT
         total_fetched = 0
         truncated = False
@@ -623,7 +741,7 @@ class Querymate(BaseModel):
                 extractor,
                 group_key,
                 limit=effective_limit,
-                offset=self.offset or 0,
+                offset=per_group_offset,
                 join_type=self.join_type,
             )
 
@@ -633,7 +751,7 @@ class Querymate(BaseModel):
             pagination = self._pagination_for_group(
                 total=group_total,
                 limit=per_group_limit,
-                offset=self.offset or 0,
+                offset=per_group_offset,
             )
 
             groups.append(
@@ -649,6 +767,256 @@ class Querymate(BaseModel):
 
         response = GroupedResponse(groups=groups, truncated=truncated)
         return response.model_dump()
+
+    def _window_grouping_unsupported_reason(
+        self,
+        group_config: GroupByConfig,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> str | None:
+        if dialect not in ("postgresql", "sqlite"):
+            return f"grouping.strategy='window' does not support dialect '{dialect}'"
+        if "." in group_config.field:
+            return "grouping.strategy='window' does not support relationship group_by fields yet"
+        if any(isinstance(field, dict) for field in (self.select or [])):
+            return "grouping.strategy='window' does not support relationship select fields yet"
+        if any(isinstance(sort_item, dict) for sort_item in (self.sort or [])):
+            return "grouping.strategy='window' does not support custom value sort dictionaries yet"
+        return None
+
+    def _handle_window_grouping_unsupported(
+        self,
+        reason: str,
+        db: Session,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> dict[str, Any]:
+        if self.grouping.fallback == "legacy":
+            return self._run_grouped_legacy(db, model, dialect=dialect)
+        raise ValueError(
+            f"{reason}; use grouping.fallback='legacy' to run the legacy grouped strategy"
+        )
+
+    async def _handle_window_grouping_unsupported_async(
+        self,
+        reason: str,
+        db: AsyncSession,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> dict[str, Any]:
+        if self.grouping.fallback == "legacy":
+            return await self._run_grouped_legacy_async(db, model, dialect=dialect)
+        raise ValueError(
+            f"{reason}; use grouping.fallback='legacy' to run the legacy grouped strategy"
+        )
+
+    def _window_group_query(
+        self,
+        model: type[T],
+        group_config: GroupByConfig,
+        extractor: GroupKeyExtractor,
+        per_group_limit: int,
+        per_group_offset: int,
+    ) -> tuple[Any, QueryBuilder, int]:
+        query_builder = QueryBuilder(model=model)
+        query_builder.apply_select(self.select, join_type=self.join_type)
+        query_builder.apply_filter(self.filter)
+        query_builder.apply_sort(self.sort)
+
+        selected_field_count = sum(
+            1 for field in query_builder.select if isinstance(field, str)
+        )
+
+        column = query_builder._resolve_column(group_config.field)
+        group_expr = extractor.get_group_key_expression(column, group_config)
+
+        mapper = cast(Mapper, inspect(model))
+        pk_col = next(col for col in mapper.primary_key)
+        order_by = tuple(getattr(query_builder.query, "_order_by_clauses", ()))
+        if not order_by:
+            order_by = (pk_col,)
+
+        row_number_expr = func.row_number().over(
+            partition_by=group_expr,
+            order_by=order_by,
+        )
+        window_columns = [
+            group_expr.label("querymate_group_key"),
+            row_number_expr.label("querymate_group_row_number"),
+        ]
+        if self.grouping.include_counts:
+            window_columns.append(
+                func.count()
+                .over(partition_by=group_expr)
+                .label("querymate_group_total")
+            )
+
+        window_query = query_builder.query.order_by(None).add_columns(*window_columns)
+        window_subquery = window_query.subquery()
+
+        fetch_limit = per_group_limit
+        if not self.grouping.include_counts:
+            fetch_limit += 1
+
+        row_number_col = window_subquery.c.querymate_group_row_number
+        outer_query = (
+            sa_select(*list(window_subquery.c))
+            .where(row_number_col > per_group_offset)
+            .where(row_number_col <= per_group_offset + fetch_limit)
+            .order_by(window_subquery.c.querymate_group_key, row_number_col)
+        )
+        return outer_query, query_builder, selected_field_count
+
+    def _row_values(self, row: Any) -> tuple[Any, ...]:
+        if hasattr(row, "_tuple"):
+            return tuple(row._tuple())
+        return tuple(row)
+
+    def _build_window_grouped_response(
+        self,
+        rows: list[Any],
+        query_builder: QueryBuilder,
+        model: type[T],
+        selected_field_count: int,
+        per_group_limit: int,
+        per_group_offset: int,
+    ) -> dict[str, Any]:
+        grouped_rows: dict[Any, list[tuple[Any, ...]]] = {}
+        group_totals: dict[Any, int] = {}
+
+        for row in rows:
+            values = self._row_values(row)
+            group_key = values[selected_field_count]
+            grouped_rows.setdefault(group_key, []).append(values[:selected_field_count])
+            if self.grouping.include_counts:
+                group_totals[group_key] = int(values[selected_field_count + 2])
+
+        max_total = settings.MAX_LIMIT
+        total_fetched = 0
+        truncated = False
+        groups: list[GroupResult] = []
+
+        for group_key, row_values in grouped_rows.items():
+            if total_fetched >= max_total:
+                truncated = True
+                break
+
+            remaining = max_total - total_fetched
+            effective_limit = min(per_group_limit, remaining)
+            item_rows = row_values[:effective_limit]
+            data = query_builder.reconstruct_objects(item_rows, model)
+            serialized = query_builder.serialize(data)
+            total_fetched += len(serialized)
+
+            if self.grouping.include_counts:
+                pagination = self._pagination_for_group(
+                    total=group_totals[group_key],
+                    limit=per_group_limit,
+                    offset=per_group_offset,
+                )
+            else:
+                pagination = self._pagination_for_group_without_total(
+                    limit=per_group_limit,
+                    offset=per_group_offset,
+                    has_next_page=len(row_values) > per_group_limit,
+                )
+
+            groups.append(
+                GroupResult(
+                    key=str(group_key) if group_key is not None else None,
+                    items=serialized,
+                    pagination=pagination,
+                )
+            )
+
+            if effective_limit < per_group_limit and len(row_values) >= effective_limit:
+                truncated = True
+
+        response = GroupedResponse(groups=groups, truncated=truncated)
+        return response.model_dump()
+
+    def _run_grouped_window(
+        self,
+        db: Session,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        group_config = self._get_group_config()
+        unsupported_reason = self._window_grouping_unsupported_reason(
+            group_config, dialect
+        )
+        if unsupported_reason is not None:
+            return self._handle_window_grouping_unsupported(
+                unsupported_reason,
+                db,
+                model,
+                dialect=dialect,
+            )
+
+        extractor = GroupKeyExtractor(dialect=dialect)
+        per_group_limit = (
+            self.grouping.per_group_limit or self.limit or settings.DEFAULT_LIMIT
+        )
+        per_group_offset = self.grouping.per_group_offset or self.offset or 0
+        query, query_builder, selected_field_count = self._window_group_query(
+            model,
+            group_config,
+            extractor,
+            per_group_limit,
+            per_group_offset,
+        )
+        rows = list(db.execute(query).all())
+        return self._build_window_grouped_response(
+            rows,
+            query_builder,
+            model,
+            selected_field_count,
+            per_group_limit,
+            per_group_offset,
+        )
+
+    async def _run_grouped_window_async(
+        self,
+        db: AsyncSession,
+        model: type[T],
+        *,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> dict[str, Any]:
+        group_config = self._get_group_config()
+        unsupported_reason = self._window_grouping_unsupported_reason(
+            group_config, dialect
+        )
+        if unsupported_reason is not None:
+            return await self._handle_window_grouping_unsupported_async(
+                unsupported_reason,
+                db,
+                model,
+                dialect=dialect,
+            )
+
+        extractor = GroupKeyExtractor(dialect=dialect)
+        per_group_limit = (
+            self.grouping.per_group_limit or self.limit or settings.DEFAULT_LIMIT
+        )
+        per_group_offset = self.grouping.per_group_offset or self.offset or 0
+        query, query_builder, selected_field_count = self._window_group_query(
+            model,
+            group_config,
+            extractor,
+            per_group_limit,
+            per_group_offset,
+        )
+        results = await db.execute(query)
+        return self._build_window_grouped_response(
+            list(results.all()),
+            query_builder,
+            model,
+            selected_field_count,
+            per_group_limit,
+            per_group_offset,
+        )
 
     def _pagination_for_group(
         self, total: int, limit: int, offset: int
@@ -678,4 +1046,24 @@ class Querymate(BaseModel):
             pages=pages,
             previous_page=previous_page,
             next_page=next_page,
+        )
+
+    def _pagination_for_group_without_total(
+        self, limit: int, offset: int, has_next_page: bool
+    ) -> PaginationInfo:
+        """Build per-group pagination metadata without exact counts."""
+        size = limit
+        page = (offset // size) + 1 if size > 0 else 1
+        previous_page = page - 1 if page > 1 else None
+        next_page = page + 1 if has_next_page else None
+
+        return PaginationInfo(
+            total=None,
+            page=page,
+            size=size,
+            pages=None,
+            previous_page=previous_page,
+            next_page=next_page,
+            has_next_page=has_next_page,
+            mode="has_next",
         )
