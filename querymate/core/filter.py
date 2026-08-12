@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any, ClassVar, TypeVar
 
@@ -20,6 +21,7 @@ from querymate.core.exceptions import (
     UnknownRelationshipError,
     UnsupportedOperatorError,
 )
+from querymate.core.policy import EntityPolicy
 
 T = TypeVar("T")
 
@@ -591,6 +593,8 @@ class FilterBuilder:
         model: ModelClass,
         resolver: DefaultFieldResolver | None = None,
         computed: ComputedRegistry | None = None,
+        scope_for: Callable[[ModelClass], Any | None] | None = None,
+        entity_policy: EntityPolicy | None = None,
     ) -> None:
         """Initialize the filter builder.
 
@@ -603,11 +607,19 @@ class FilterBuilder:
         self.model = model
         self.resolver = resolver or DefaultFieldResolver()
         self.computed = computed
+        self.scope_for = scope_for
+        self.entity_policy = entity_policy
 
     def _resolve(self, model: ModelClass, field: str) -> Any:
         """Resolve a leaf field to a column or a computed expression."""
-        if field in computed_names(model, self.computed):
-            return computed_expression(model, field, self.computed)
+        if field in computed_names(model, self.computed, self.entity_policy):
+            return computed_expression(
+                model,
+                field,
+                self.computed,
+                self.scope_for,
+                self.entity_policy,
+            )
         return self.resolver.resolve(model, field)
 
     def _get_column_type(self, column: InstrumentedAttribute) -> TypeEngine | None:
@@ -813,6 +825,10 @@ class FilterBuilder:
                 )
             related_model: ModelClass = relationship.mapper.class_
             inner_conditions = self._parse(related_model, sub_filters)
+            if self.scope_for is not None:
+                related_scope = self.scope_for(related_model)
+                if related_scope is not None:
+                    inner_conditions.append(related_scope)
             inner = (
                 inner_conditions[0]
                 if len(inner_conditions) == 1

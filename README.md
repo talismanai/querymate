@@ -243,21 +243,33 @@ def post_scope(ctx):
         select(TeamMember.team_id).where(TeamMember.user_id == ctx.principal.id)
     )
 
+scopes.allow_all(User)
+
+querymate = Querymate.setup(
+    scopes=scopes,
+    allowed_entities=[User, Post],
+    # These are omitted from OpenAPI and rejected before SQL at any path.
+    blocked_entities=[OAuthClient, SecretEntity],
+)
+
+UsersQuery = querymate.for_model(User)
+
 @app.get("/users")
 def list_users(
-    query: QueryMate = Depends(QueryMate.fastapi_dependency),
+    query: Querymate = Depends(UsersQuery),
     db: Session = Depends(get_db),
     me = Depends(get_current_user),
 ):
-    return query.run(db, User, scopes=scopes.bind(principal=me, db=db))
+    return query.run(db, principal=me)
 ```
 
 Each resolver runs at most once per model per request — never once per row — and
 `ctx.cache` lets several models share one expensive lookup. Counts respect scopes, so
 `total` never leaks the existence of invisible rows. Querying a model with no
 registered scope raises `UnscopedModelError`; mark genuinely public data with
-`scopes.allow_all(Model)`, or bind with `strict=False` to adopt scopes gradually.
-Omitting `scopes=` leaves behaviour unchanged.
+`scopes.allow_all(Model)`. The optional entity allow-list limits which models may be
+roots or relationship targets, while the block-list always wins. Direct unconfigured
+execution remains available for one release with a deprecation warning.
 
 See [the authorization guide](docs/source/usage/authorization.rst) for async
 resolvers and the current limits.
@@ -321,22 +333,20 @@ Querymate(sort=[{"status": ["pending", "active", "inactive"]}, "-created_at"]).r
 Querymate(sort=[{"posts.visibility": ["private", "internal", "public"]}]).run_raw(db, User)
 ```
 
-### Pagination Metadata Response
+### One Response Interface
 
-In addition to plain lists, you can include pagination metadata alongside items.
-Use the dedicated paginated methods:
+Queries created by the configured facade use one interface: `run` and `run_async`
+infer the query mode and always return `{kind, items, meta}`. Direct, unconfigured
+record queries keep returning a list for one release and emit a deprecation warning.
 
 ```python
-# Sync paginated response
-result = query.run_paginated(db, User)
+# Offset records are the default and count exactly unless count="none".
+result = query.run(db, principal=principal)
 
-# Async paginated response
-result = await query.run_async_paginated(db, User)
-
-# Response shape (PaginatedResponse object)
 # {
+#   "kind": "records",
 #   "items": [{"id": 1, "name": "John"}, ...],
-#   "pagination": {
+#   "meta": {
 #     "total": 57,
 #     "page": 2,
 #     "size": 10,
@@ -347,12 +357,9 @@ result = await query.run_async_paginated(db, User)
 # }
 ```
 
-The standard `run` and `run_async` methods always return a plain list of items:
-
-```python
-# Always returns a list[dict[str, Any]]
-result = query.run(db, User)
-```
+`aggregate` selects aggregate mode, `group_by` without aggregates selects grouped
+records, and an explicitly present `cursor` key (including `null`) selects cursor
+mode. The specialized execution methods are deprecated migration wrappers.
 
 ### Cursor Pagination
 
@@ -362,12 +369,12 @@ through and every later page shifts by one. A cursor names the last record seen,
 query's own order, so the boundary cannot move.
 
 ```python
-page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(db, Post)
-# page.items, page.cursor.next, page.cursor.has_more
+page = Querymate(sort=["-created_at"], limit=20, cursor=None).run(db, Post)
+# page.items, page.meta.next, page.meta.has_more
 
 following = Querymate(
-    sort=["-created_at"], limit=20, cursor=page.cursor.next
-).run_cursor_paginated(db, Post)
+    sort=["-created_at"], limit=20, cursor=page.meta.next
+).run(db, Post)
 ```
 
 The primary key is appended as a tiebreaker so any sort gives a total order. The cursor
@@ -388,8 +395,8 @@ Querymate(
     aggregate={"total": {"sum": "amount"}, "n": {"count": "*"}},
     group_by="status",
     having={"total": {"gt": 1000}},
-).run_aggregated(db, Order)
-# {"results": [{"key": "paid", "total": 4200, "n": 17}]}
+).run(db, Order)
+# {"kind": "aggregate", "items": [{"key": "paid", "total": 4200, "n": 17}], "meta": {}}
 ```
 
 Whatever the number of groups, it is one query. Row scopes and filters restrict what is
@@ -411,9 +418,9 @@ querymate = Querymate(
     group_by="status",
     limit=10,  # Per-group limit
 )
-result = querymate.run_grouped(db, User)
+result = querymate.run(db, User)
 # Or async:
-# result = await querymate.run_grouped_async(db, User)
+# result = await querymate.run_async(db, User)
 ```
 
 Query parameter example:
@@ -432,7 +439,7 @@ querymate = Querymate(
     group_by={"field": "created_at", "granularity": "month"},
     limit=10,
 )
-result = querymate.run_grouped(db, Post)
+result = querymate.run(db, Post)
 ```
 
 Query parameter examples:

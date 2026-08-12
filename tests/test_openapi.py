@@ -156,10 +156,13 @@ def test_schema_documents_dotted_relationship_filters() -> None:
 
 def test_schema_documents_sort_directions() -> None:
     schema = build_query_schema(User)
-    sort_enum = schema["properties"][settings.SORT_PARAM_NAME]["items"]["enum"]
+    sort_items = schema["properties"][settings.SORT_PARAM_NAME]["items"]
+    sort_enum = sort_items["oneOf"][0]["enum"]
 
     assert "name" in sort_enum
     assert "-name" in sort_enum
+    custom_name = sort_items["oneOf"][1]["properties"]["name"]
+    assert {"values", "order"} <= set(custom_name["anyOf"][1]["properties"])
 
 
 def test_schema_bounds_limit_by_max() -> None:

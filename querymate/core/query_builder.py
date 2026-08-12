@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from sqlalchemy import and_, case, func
+from sqlalchemy import and_, func
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapper, Session, joinedload, load_only, selectinload
@@ -19,6 +19,7 @@ from querymate.core.compat import (
     scalar_fields,
 )
 from querymate.core.computed import (
+    COUNT_SUFFIX,
     ComputedRegistry,
     computed_expression,
     computed_names,
@@ -42,7 +43,9 @@ from querymate.core.exceptions import (
 )
 from querymate.core.filter import FilterBuilder
 from querymate.core.openapi import python_type_of
+from querymate.core.policy import EntityPolicy
 from querymate.core.scope import BoundScopes
+from querymate.core.sorting import compile_sort, parse_sort
 from querymate.types import FieldSelection, NormalizedSelection
 
 if TYPE_CHECKING:
@@ -127,6 +130,7 @@ class QueryBuilder:
         scopes: BoundScopes | None = None,
         exposure: "ResolvedExposure | None" = None,
         computed: ComputedRegistry | None = None,
+        entity_policy: EntityPolicy | None = None,
     ) -> None:
         """Initialize the QueryBuilder.
 
@@ -147,6 +151,9 @@ class QueryBuilder:
         self.scopes = scopes
         self.exposure = exposure
         self.computed = computed
+        self.entity_policy = entity_policy
+        if entity_policy is not None:
+            entity_policy.check(model, path=model.__name__, operation="root")
         self.query = select(model)
         self.select = []
         self.filter = {}
@@ -184,6 +191,9 @@ class QueryBuilder:
         inspection: Mapper = inspect(model)
         for field in fields:
             if not isinstance(field, dict):
+                target = self._computed_target(model, field)
+                if target is not None:
+                    self._append_model(models, target)
                 continue
             for relationship_name, relationship_fields in field.items():
                 # Normalization validated the name, so the lookup cannot miss.
@@ -196,14 +206,112 @@ class QueryBuilder:
                         models.append(nested)
         return models
 
-    def _planned_models(self, fields: list[FieldSelection] | None) -> list[ModelClass]:
-        """Resolve which models a ``select`` argument will end up loading."""
+    @staticmethod
+    def _append_model(models: list[ModelClass], model: ModelClass) -> None:
+        """Append a model once while preserving traversal order."""
+        if model not in models:
+            models.append(model)
+
+    def _computed_target(self, model: ModelClass, field: str) -> ModelClass | None:
+        """Return the target of an automatic relationship count, if this is one."""
+        if not field.endswith(COUNT_SUFFIX):
+            return None
+        relationship_name = field[: -len(COUNT_SUFFIX)]
+        relationship = inspect(model).relationships.get(relationship_name)
+        if relationship is None or not relationship.uselist:
+            return None
+        target: ModelClass = relationship.mapper.class_
+        if self.entity_policy is not None:
+            self.entity_policy.check(
+                target,
+                path=f"{model.__name__}.{field}",
+                operation="computed",
+            )
+        return target
+
+    def _append_path_models(
+        self, models: list[ModelClass], model: ModelClass, field_path: str
+    ) -> None:
+        """Collect the relationship targets crossed by a dotted field path."""
+        current = model
+        parts = field_path.split(".")
+        for hop in parts[:-1]:
+            mapper: Mapper = inspect(current)
+            relationship = mapper.relationships.get(hop)
+            if relationship is None:
+                return  # The normal validation path will report the precise error.
+            current = relationship.mapper.class_
+            if self.entity_policy is not None:
+                self.entity_policy.check(
+                    current,
+                    path=f"{model.__name__}.{field_path}",
+                    operation="relationship",
+                )
+            self._append_model(models, current)
+        target = self._computed_target(current, parts[-1])
+        if target is not None:
+            self._append_model(models, target)
+
+    def _append_filter_models(
+        self, models: list[ModelClass], model: ModelClass, filter_dict: dict[str, Any]
+    ) -> None:
+        """Collect models referenced anywhere in a filter tree."""
+        for key, value in filter_dict.items():
+            if key in ("and", "or"):
+                for nested in value:
+                    self._append_filter_models(models, model, nested)
+            else:
+                self._append_path_models(models, model, key)
+
+    def _planned_models(
+        self,
+        fields: list[FieldSelection] | None,
+        filter_dict: dict[str, Any] | None = None,
+        sort: list[str | dict[str, Any]] | None = None,
+        group_by: str | dict[str, Any] | None = None,
+        aggregate_fields: Sequence[str] | None = None,
+    ) -> list[ModelClass]:
+        """Resolve every model that selection, filtering, sorting or grouping touches."""
         effective = fields if fields else scalar_fields(self.model)
         normalized = self._normalize_select_fields(self.model, effective)
-        return self._models_in_select(self.model, normalized)
+        models = self._models_in_select(self.model, normalized)
+        if filter_dict:
+            self._append_filter_models(models, self.model, filter_dict)
+        for spec in parse_sort(sort):
+            self._append_path_models(models, self.model, spec.field)
+        if group_by:
+            group_field = (
+                group_by if isinstance(group_by, str) else group_by.get("field")
+            )
+            if isinstance(group_field, str):
+                self._append_path_models(models, self.model, group_field)
+        for field in aggregate_fields or ():
+            if field != "*":
+                self._append_path_models(models, self.model, field)
+
+        # Normalizing the selection records child-level filters and sorts. They need
+        # scopes too, even though they do not appear in the root filter/sort blocks.
+        for path, child_filter in self._relationship_filters.items():
+            current = self.model
+            for hop in path:
+                current = inspect(current).relationships[hop].mapper.class_
+            self._append_filter_models(models, current, child_filter)
+        for path, options in self._relationship_windows.items():
+            current = self.model
+            for hop in path:
+                current = inspect(current).relationships[hop].mapper.class_
+            for spec in parse_sort(options.get("sort")):
+                self._append_path_models(models, current, spec.field)
+        return models
 
     def prepare_scopes(
-        self, fields: list[FieldSelection] | None = None
+        self,
+        fields: list[FieldSelection] | None = None,
+        *,
+        filter_dict: dict[str, Any] | None = None,
+        sort: list[str | dict[str, Any]] | None = None,
+        group_by: str | dict[str, Any] | None = None,
+        aggregate_fields: Sequence[str] | None = None,
     ) -> "QueryBuilder":
         """Resolve scope conditions for every model this query will load.
 
@@ -218,18 +326,28 @@ class QueryBuilder:
         """
         if self.scopes is None:
             return self
-        for model in self._planned_models(fields):
+        for model in self._planned_models(
+            fields, filter_dict, sort, group_by, aggregate_fields
+        ):
             self.scopes.condition_for(model)
             self.scopes.grants_for(model)
         return self
 
     async def prepare_scopes_async(
-        self, fields: list[FieldSelection] | None = None
+        self,
+        fields: list[FieldSelection] | None = None,
+        *,
+        filter_dict: dict[str, Any] | None = None,
+        sort: list[str | dict[str, Any]] | None = None,
+        group_by: str | dict[str, Any] | None = None,
+        aggregate_fields: Sequence[str] | None = None,
     ) -> "QueryBuilder":
         """Async counterpart of :meth:`prepare_scopes`, awaiting async resolvers."""
         if self.scopes is None:
             return self
-        for model in self._planned_models(fields):
+        for model in self._planned_models(
+            fields, filter_dict, sort, group_by, aggregate_fields
+        ):
             await self.scopes.condition_for_async(model)
             await self.scopes.grants_for_async(model)
         return self
@@ -239,6 +357,29 @@ class QueryBuilder:
         if self.scopes is None:
             return None
         return self.scopes.condition_for(model)
+
+    def _filters_for(self, model: ModelClass, filter_dict: dict[str, Any]) -> list[Any]:
+        """Build filters with scopes injected at every relationship hop."""
+        return FilterBuilder(
+            model,
+            computed=self.computed,
+            scope_for=self._scope_for,
+            entity_policy=self.entity_policy,
+        ).build(filter_dict)
+
+    def _computed_names(self, model: ModelClass) -> list[str]:
+        """Computed fields available after applying the entity policy."""
+        return computed_names(model, self.computed, self.entity_policy)
+
+    def _computed_expression(self, model: ModelClass, name: str) -> Any:
+        """Resolve a computed expression with related entity scopes applied."""
+        return computed_expression(
+            model,
+            name,
+            self.computed,
+            self._scope_for,
+            self.entity_policy,
+        )
 
     def _enforce_selection_bounds(self, fields: list[NormalizedSelection]) -> None:
         """Reject selections that are too deep or too large.
@@ -302,16 +443,24 @@ class QueryBuilder:
         exposure: "ResolvedExposure | None",
     ) -> tuple[ModelClass, "ResolvedExposure | None"]:
         """Validate a relationship hop, returning the target model and its exposure."""
-        child_exposure = (
-            exposure.check_relationship(name) if exposure is not None else None
-        )
-
         mapper: Mapper = inspect(model)
         relationship = mapper.relationships.get(name)
         if relationship is None:
             raise UnknownRelationshipError(
                 name, model.__name__, set(mapper.relationships.keys())
             )
+
+        child_model: ModelClass = relationship.mapper.class_
+        if self.entity_policy is not None:
+            self.entity_policy.check(
+                child_model,
+                path=f"{model.__name__}.{name}",
+                operation="relationship",
+            )
+
+        child_exposure = (
+            exposure.check_relationship(name) if exposure is not None else None
+        )
 
         grants = self.scopes.grants_for(model) if self.scopes is not None else None
         if (
@@ -323,7 +472,7 @@ class QueryBuilder:
                 name, model.__name__, sorted(grants.expandable)
             )
 
-        return relationship.mapper.class_, child_exposure
+        return child_model, child_exposure
 
     def _enforce_selection(
         self,
@@ -391,9 +540,23 @@ class QueryBuilder:
         """Reject a sort naming a field this caller may not sort on."""
         self._enforce_path_access(model, field_path, "sorted", exposure)
 
+    def _path_context(
+        self, path: tuple[str, ...]
+    ) -> tuple[ModelClass, "ResolvedExposure | None"]:
+        """Resolve the model and exposure at a selected relationship path."""
+        model = self.model
+        exposure = self.exposure
+        for relationship in path:
+            model, exposure = self._check_relationship(model, relationship, exposure)
+        return model, exposure
+
     def _access_is_restricted(self) -> bool:
         """Whether any access rule applies, so enforcement can be skipped when none do."""
-        return self.exposure is not None or self.scopes is not None
+        return (
+            self.exposure is not None
+            or self.scopes is not None
+            or self.entity_policy is not None
+        )
 
     def _normalize_select_fields(
         self,
@@ -425,7 +588,7 @@ class QueryBuilder:
         normalized_relationships: list[dict[str, list[Any]]] = []
 
         valid_model_fields: list[str] = scalar_fields(model)
-        available_computed = computed_names(model, self.computed)
+        available_computed = self._computed_names(model)
         inspection: Mapper = inspect(model)
         valid_relationships = inspection.relationships
 
@@ -436,6 +599,7 @@ class QueryBuilder:
                     # so they are opt-in by name rather than swept in by a wildcard.
                     normalized_field_names = sorted(valid_model_fields)
                 else:
+                    self._computed_target(model, field)
                     if (
                         field not in valid_model_fields
                         and field not in available_computed
@@ -460,6 +624,12 @@ class QueryBuilder:
                         )
                     relationship_model: ModelClass = relationship_property.mapper.class_
                     relationship_path = (*path, relationship_name)
+                    if self.entity_policy is not None:
+                        self.entity_policy.check(
+                            relationship_model,
+                            path=".".join(relationship_path),
+                            operation="select",
+                        )
 
                     relationship_fields: Sequence[FieldSelection]
                     if isinstance(relationship_spec, dict):
@@ -585,7 +755,7 @@ class QueryBuilder:
         parent_key = (relationship.local_remote_pairs or [])[0][0].name
         parent_ids = [getattr(parent, parent_key) for parent in parents]
 
-        order_by = self._child_order_by(child_model, options.get("sort"))
+        order_by = self._child_order_by(child_model, options.get("sort"), path)
         row_number = (
             func.row_number()
             .over(partition_by=child_fk, order_by=order_by)
@@ -601,9 +771,7 @@ class QueryBuilder:
             numbered = numbered.where(scope_condition)
         child_filter = self._relationship_filters.get(path)
         if child_filter:
-            numbered = numbered.where(
-                *FilterBuilder(child_model, computed=self.computed).build(child_filter)
-            )
+            numbered = numbered.where(*self._filters_for(child_model, child_filter))
 
         windowed = numbered.subquery()
         offset = int(options.get("offset") or 0)
@@ -648,23 +816,34 @@ class QueryBuilder:
             .execution_options(populate_existing=True)
         )
 
-    def _child_order_by(self, child_model: ModelClass, sort: Any) -> list[Any]:
+    def _child_order_by(
+        self, child_model: ModelClass, sort: Any, path: tuple[str, ...]
+    ) -> list[Any]:
         """Ordering used inside each parent's window, defaulting to the primary key."""
-        expressions: list[Any] = []
-        for entry in sort or []:
-            if not isinstance(entry, str):
-                continue
-            descending = entry.startswith("-")
-            field = entry[1:] if entry[0] in "+-" else entry
+        specs = parse_sort(sort)
+
+        child_exposure = self.exposure
+        for hop in path:
+            child_exposure = (
+                child_exposure.child(hop) if child_exposure is not None else None
+            )
+
+        def resolve(field: str, _: bool) -> Any:
             if not has_field(child_model, field):
                 raise UnknownFieldError(
                     field, child_model.__name__, scalar_fields(child_model)
                 )
-            column = getattr(child_model, field)
-            expressions.append(column.desc() if descending else column)
-        if not expressions:
-            child_mapper: Mapper = inspect(child_model)
-            expressions = [child_mapper.primary_key[0]]
+            if self._access_is_restricted():
+                self._check_field(child_model, field, "sorted", child_exposure)
+            return getattr(child_model, field)
+
+        expressions = compile_sort(specs, resolve)
+        child_mapper: Mapper = inspect(child_model)
+        primary_key = child_mapper.primary_key[0]
+        if not any(
+            spec.field == primary_key.name and not spec.custom for spec in specs
+        ):
+            expressions.append(primary_key)
         return expressions
 
     def _relationship_attribute(
@@ -690,7 +869,7 @@ class QueryBuilder:
         child_filter = self._relationship_filters.get(path)
         if child_filter:
             conditions.extend(
-                FilterBuilder(relationship.mapper.class_).build(child_filter)
+                self._filters_for(relationship.mapper.class_, child_filter)
             )
 
         if conditions:
@@ -725,7 +904,7 @@ class QueryBuilder:
         # Field names were validated during normalization, which is the single place
         # that decides whether a selection is acceptable. Computed fields are not
         # columns, so they are not part of load_only.
-        available_computed = set(computed_names(model, self.computed))
+        available_computed = set(self._computed_names(model))
         computed_requested = [
             field
             for field in fields
@@ -883,17 +1062,21 @@ class QueryBuilder:
         self._enforce_selection_bounds(normalized_fields)
         if self._access_is_restricted():
             self._enforce_selection(self.model, normalized_fields, self.exposure)
+            for path, child_filter in self._relationship_filters.items():
+                child_model, child_exposure = self._path_context(path)
+                self._enforce_filter_access(child_model, child_filter, child_exposure)
         self.select = normalized_fields
 
         loader_options = self._loader_options(self.model, normalized_fields)
         # Computed fields ride along as extra columns on the root query: one scalar
         # subquery each, no extra round trip and no effect on the row count.
         computed_columns = [
-            computed_expression(self.model, name, self.computed).label(name)
+            self._computed_expression(self.model, name).label(name)
             for name in self._computed_selected
         ]
         self.query = (
-            select(self.model, *computed_columns).options(*loader_options)
+            select(self.model, *computed_columns)
+            .options(*loader_options)
             # Without this, an entity already in the session's identity map keeps the
             # relationship contents it was first loaded with. Two queries differing
             # only in their scope would then serve the first principal's children for
@@ -937,8 +1120,7 @@ class QueryBuilder:
         if self._access_is_restricted():
             self._enforce_filter_access(self.model, filter_dict, self.exposure)
         self.filter = filter_dict
-        filter_builder = FilterBuilder(self.model, computed=self.computed)
-        filters = filter_builder.build(filter_dict)
+        filters = self._filters_for(self.model, filter_dict)
         if filters:
             self.query = self.query.where(*filters)
         return self
@@ -967,8 +1149,8 @@ class QueryBuilder:
 
         parts = field_path.split(".")
         if len(parts) == 1:
-            if parts[0] in computed_names(self.model, self.computed):
-                return computed_expression(self.model, parts[0], self.computed)
+            if parts[0] in self._computed_names(self.model):
+                return self._computed_expression(self.model, parts[0])
             return getattr(self.model, parts[0])
 
         join_conditions: list[Any] = []
@@ -982,6 +1164,9 @@ class QueryBuilder:
             if relationship.secondary is not None:
                 join_conditions.append(relationship.secondaryjoin)
             current = relationship.mapper.class_
+            related_scope = self._scope_for(current)
+            if related_scope is not None:
+                join_conditions.append(related_scope)
 
         column = getattr(current, parts[-1])
         aggregate = func.max if descending else func.min
@@ -1011,58 +1196,9 @@ class QueryBuilder:
         if not sort:
             return self
         self.sort = sort
-        for sort_param in sort:
-            # Custom value order: accept {"field": [values...]} or {"field": {"values": [...]} or {"field": {"order": [...]}}
-            if isinstance(sort_param, dict):
-                # Two shapes supported: {"field": [..]} or {"field": {"values": [..]}} or {"field": {"order": [..]}}
-                if len(sort_param) == 1:
-                    field_key = next(iter(sort_param.keys()))
-                    values_candidate = sort_param[field_key]
-                    if isinstance(values_candidate, dict):
-                        order_values = values_candidate.get(
-                            "values"
-                        ) or values_candidate.get("order")
-                    else:
-                        order_values = values_candidate
-
-                    if not isinstance(order_values, list):
-                        logger.warning(
-                            "Invalid custom sort specification for %s; expected list of values",
-                            field_key,
-                        )
-                        continue
-
-                    column_attr = self._sort_expression(field_key)
-
-                    # Build CASE expression mapping listed values to ranks
-                    whens = [(column_attr == v, i) for i, v in enumerate(order_values)]
-                    case_expr = case(*whens, else_=len(whens) + 1)
-                    self.query = self.query.order_by(case_expr)
-                    continue
-
-                # If dict has unexpected shape, skip with warning
-                logger.warning("Unsupported sort dict format: %s", sort_param)
-                continue
-
-            # String-based sort with optional +/- prefix
-            sort_str: str = sort_param
-            if sort_str.startswith("-"):
-                field = sort_str[1:]
-                direction = "desc"
-            elif sort_str.startswith("+"):
-                field = sort_str[1:]
-                direction = "asc"
-            else:
-                field = sort_str
-                direction = "asc"
-
-            descending = direction == "desc"
-            # Handles nested paths (e.g. "posts.title") without joining.
-            order_expr = self._sort_expression(field, descending=descending)
-            self.query = self.query.order_by(
-                order_expr.desc() if descending else order_expr
-            )
-
+        self.query = self.query.order_by(
+            *compile_sort(parse_sort(sort), self._sort_expression)
+        )
         return self
 
     def keyset_keys(self, sort: list[str | dict[str, Any]] | None) -> list[SortKey]:
@@ -1077,17 +1213,14 @@ class QueryBuilder:
             InvalidCursorError: If the sort cannot define a stable total order.
         """
         keys: list[SortKey] = []
-        for entry in sort or []:
-            if isinstance(entry, dict):
+        for spec in parse_sort(sort):
+            if spec.custom:
                 raise InvalidCursorError(
                     "A custom value order cannot be paged by cursor; the order is a "
                     "ranking, not a column, so there is nothing to resume from.",
                 )
-            field = entry
-            descending = False
-            if field.startswith(("-", "+")):
-                descending = field.startswith("-")
-                field = field[1:]
+            field = spec.field
+            descending = spec.descending
             if "." in field:
                 raise InvalidCursorError(
                     "Cursor pagination sorts on the record's own fields; "
@@ -1393,9 +1526,7 @@ class QueryBuilder:
 
         # Rebuild filters without mutating the main query
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 count_query = count_query.where(*filters)
 
@@ -1480,9 +1611,7 @@ class QueryBuilder:
         count_query = select(func.count(func.distinct(pk_col)))
 
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 count_query = count_query.where(*filters)
 
@@ -1554,15 +1683,15 @@ class QueryBuilder:
 
         # Apply existing filters
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 keys_query = keys_query.where(*filters)
 
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             keys_query = keys_query.where(root_scope)
+        for condition in self._required_conditions:
+            keys_query = keys_query.where(condition)
 
         # Order naturally (alphabetically for strings, chronologically for dates)
         keys_query = keys_query.order_by(group_expr)
@@ -1598,15 +1727,15 @@ class QueryBuilder:
         ).group_by(group_expr)
 
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 keys_query = keys_query.where(*filters)
 
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             keys_query = keys_query.where(root_scope)
+        for condition in self._required_conditions:
+            keys_query = keys_query.where(condition)
 
         keys_query = keys_query.order_by(group_expr)
 
@@ -1626,8 +1755,8 @@ class QueryBuilder:
         if self._access_is_restricted():
             self._enforce_path_access(self.model, field, "selected", self.exposure)
 
-        if field in computed_names(self.model, self.computed):
-            return computed_expression(self.model, field, self.computed)
+        if field in self._computed_names(self.model):
+            return self._computed_expression(self.model, field)
 
         mapper: Mapper = inspect(self.model)
         if field not in mapper.columns:
@@ -1662,6 +1791,7 @@ class QueryBuilder:
             return self._resolve_column(field_path)
 
         join_conditions: list[Any] = []
+        has_related_scope = False
         current: ModelClass = self.model
         for hop in parts[:-1]:
             mapper: Mapper = inspect(current)
@@ -1678,6 +1808,21 @@ class QueryBuilder:
                 )
             join_conditions.append(relationship.primaryjoin)
             current = relationship.mapper.class_
+            related_scope = self._scope_for(current)
+            if related_scope is not None:
+                join_conditions.append(related_scope)
+                has_related_scope = True
+
+        # A scoped to-one relationship that is not visible must remove the root row
+        # from the grouped input. Leaving it in would turn the hidden value into a
+        # ``null`` group and leak the number of rows attached to another tenant.
+        if has_related_scope:
+            self._required_conditions.append(
+                sa_select(1)
+                .where(and_(*join_conditions))
+                .correlate(self.model)
+                .exists()
+            )
 
         return (
             select(getattr(current, parts[-1]))
@@ -1713,9 +1858,7 @@ class QueryBuilder:
         query = sa_select(*columns).select_from(self.model)
 
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 query = query.where(*filters)
         root_scope = self._scope_for(self.model)
@@ -1802,21 +1945,17 @@ class QueryBuilder:
     def _group_order_by(self) -> list[Any]:
         """Ordering used inside each group's window.
 
-        Falls back to the primary key so ROW_NUMBER is deterministic; custom
-        value-ordering entries are skipped, having no meaning inside a partition.
+        The primary key is appended as a deterministic tiebreaker, including after a
+        custom value rank whose unlisted values deliberately compare equally.
         """
-        expressions: list[Any] = []
-        for sort_param in self.sort:
-            if isinstance(sort_param, dict):
-                continue
-            descending = sort_param.startswith("-")
-            field = sort_param[1:] if sort_param[0] in "+-" else sort_param
-            expression = self._sort_expression(field, descending=descending)
-            expressions.append(expression.desc() if descending else expression)
-
-        if not expressions:
-            mapper: Mapper = inspect(self.model)
-            expressions = [next(col for col in mapper.primary_key)]
+        specs = parse_sort(self.sort)
+        expressions = compile_sort(specs, self._sort_expression)
+        mapper: Mapper = inspect(self.model)
+        primary_key = next(col for col in mapper.primary_key)
+        if not any(
+            spec.field == primary_key.name and not spec.custom for spec in specs
+        ):
+            expressions.append(primary_key)
         return expressions
 
     def _grouped_page_query(
@@ -1847,9 +1986,7 @@ class QueryBuilder:
             pk_col.label("qm_pk"), group_expr.label("qm_group_key"), row_number
         )
         if self.filter:
-            filters = FilterBuilder(self.model, computed=self.computed).build(
-                self.filter
-            )
+            filters = self._filters_for(self.model, self.filter)
             if filters:
                 numbered = numbered.where(*filters)
         root_scope = self._scope_for(self.model)

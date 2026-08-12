@@ -19,7 +19,9 @@ from .core.cursor import SortKey as SortKey
 from .core.descriptor import describe_app as describe_app
 from .core.descriptor import describe_resource as describe_resource
 from .core.exceptions import DepthExceededError as DepthExceededError
+from .core.exceptions import EntityNotPermittedError as EntityNotPermittedError
 from .core.exceptions import InvalidQueryError as InvalidQueryError
+from .core.exceptions import InvalidSortError as InvalidSortError
 from .core.exceptions import QuerymateError as QuerymateError
 from .core.exceptions import SelectionTooLargeError as SelectionTooLargeError
 from .core.exceptions import UnknownFieldError as UnknownFieldError
@@ -96,8 +98,10 @@ from .core.openapi import ResourceRegistry as ResourceRegistry
 from .core.openapi import build_query_schema as build_query_schema
 from .core.plan import QueryPlan as QueryPlan
 from .core.plan import build_plan as build_plan
+from .core.policy import EntityPolicy as EntityPolicy
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder
+from .core.querymate import ConfiguredQuerymate as ConfiguredQuerymate
 from .core.querymate import Querymate as Querymate
 from .core.scope import BoundScopes as BoundScopes
 from .core.scope import FieldGrants as FieldGrants
@@ -105,12 +109,17 @@ from .core.scope import ScopeCache as ScopeCache
 from .core.scope import ScopeContext as ScopeContext
 from .core.scope import ScopeRegistry as ScopeRegistry
 from .core.scope import UnscopedModelError as UnscopedModelError
+from .types import AggregateResponse as AggregateResponse
 from .types import CursorInfo as CursorInfo
 from .types import CursorPage as CursorPage
+from .types import CursorResponse as CursorResponse
+from .types import GroupsMeta as GroupsMeta
+from .types import GroupsResponse as GroupsResponse
 from .types import PaginatedResponse as PaginatedResponse
 from .types import PaginationInfo as PaginationInfo
 from .types import QuerymatePaginatedResponse as QuerymatePaginatedResponse
 from .types import QuerymateResponse as QuerymateResponse
+from .types import RecordsResponse as RecordsResponse
 
 # Type aliases for better IDE support
 QueryMateType: type[Querymate] = Querymate

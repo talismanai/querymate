@@ -41,25 +41,34 @@ Basic Usage
        # Sort by related field
        /users?q={"sort":["posts.title"]}
 
-3. Using the QueryMate class:
+3. Configure QueryMate and use its model-bound dependency:
 
    .. code-block:: python
 
+       scopes = ScopeRegistry().allow_all(User).allow_all(Post)
+       querymate = Querymate.setup(
+           scopes=scopes,
+           allowed_entities=[User, Post],
+       )
+       UsersQuery = querymate.for_model(User)
+
        @app.get("/users")
        def get_users(
-           query: QueryMate = Depends(QueryMate.fastapi_dependency),
-           db: Session = Depends(get_db)
+           query: Querymate = Depends(UsersQuery),
+           db: Session = Depends(get_db),
+           principal = Depends(current_user),
        ):
-           # Returns serialized results (dictionaries)
-           return query.run(db, User)
+           # Returns {"kind": "records", "items": [...], "meta": {...}}
+           return query.run(db, principal=principal)
 
        @app.get("/users/raw")
        def get_users_raw(
-           query: QueryMate = Depends(QueryMate.fastapi_dependency),
-           db: Session = Depends(get_db)
+           query: Querymate = Depends(UsersQuery),
+           db: Session = Depends(get_db),
+           principal = Depends(current_user),
        ):
            # Returns raw model instances
-           return query.run_raw(db, User)
+           return query.run_raw(db, principal=principal)
 
 Serialization
 ------------

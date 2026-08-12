@@ -36,6 +36,7 @@ from querymate.core.exceptions import (
     UnknownFieldError,
     UnknownRelationshipError,
 )
+from querymate.core.policy import EntityPolicy
 
 # Operator groups by the Python type of the column, intersected with the operators the
 # library actually implements so the docs can never promise one that does not exist.
@@ -209,12 +210,14 @@ class ResolvedExposure:
         max_depth: int,
         registry: ResourceRegistry | None = None,
         computed: ComputedRegistry | None = None,
+        entity_policy: EntityPolicy | None = None,
     ) -> None:
         self.model = model
         self.depth = depth
         self.max_depth = max_depth
         self.registry = registry
         self.computed = computed
+        self.entity_policy = entity_policy
 
         registered = registry.get(model) if registry is not None else None
 
@@ -227,7 +230,7 @@ class ResolvedExposure:
         selectable = list(all_fields)
         # Computed fields are selectable, filterable and sortable like any other, and
         # must be offered here or the surface check would reject them.
-        self.computed_fields = computed_names(model, computed)
+        self.computed_fields = computed_names(model, computed, entity_policy)
         selectable = selectable + self.computed_fields
 
         self.fields: list[str] = _narrow(
@@ -248,7 +251,12 @@ class ResolvedExposure:
 
         self._relationship_exposure: dict[str, Exposed | None] = {}
         if depth < max_depth:
-            names: list[str] = sorted(all_relationships)
+            names: list[str] = sorted(
+                name
+                for name in all_relationships
+                if entity_policy is None
+                or entity_policy.permits(mapper.relationships[name].mapper.class_)
+            )
             declared: dict[str, Exposed | None] = {}
             if registered and registered.relationships is not None:
                 names = _narrow(names, list(registered.relationships))
@@ -286,6 +294,7 @@ class ResolvedExposure:
             self.max_depth,
             self.registry,
             self.computed,
+            self.entity_policy,
         )
 
     def check_field(self, field: str, *, usage: str = "selected") -> None:
@@ -324,6 +333,7 @@ def resolve_exposure(
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
     computed: ComputedRegistry | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> ResolvedExposure:
     """Resolve an exposure declaration against a model."""
     return ResolvedExposure(
@@ -333,6 +343,7 @@ def resolve_exposure(
         max_depth=max_depth if max_depth is not None else settings.MAX_SELECT_DEPTH,
         registry=registry,
         computed=computed,
+        entity_policy=entity_policy,
     )
 
 
@@ -496,6 +507,7 @@ def build_query_schema(
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
     computed: ComputedRegistry | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> dict[str, Any]:
     """Build the JSON Schema of the ``q`` parameter for one model.
 
@@ -507,7 +519,9 @@ def build_query_schema(
     Returns:
         dict[str, Any]: A JSON Schema describing the decoded ``q`` object.
     """
-    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
+    exposure = resolve_exposure(
+        model, exposed, max_depth, registry, computed, entity_policy
+    )
     sortable = sorted(exposure.sortable)
     sort_values = [*sortable, *[f"-{field}" for field in sortable]]
 
@@ -524,8 +538,51 @@ def build_query_schema(
             settings.FILTER_PARAM_NAME: _filter_schema(exposure),
             settings.SORT_PARAM_NAME: {
                 "type": "array",
-                "items": {"type": "string", "enum": sort_values},
-                "description": "Fields to sort by. Prefix with '-' for descending.",
+                "items": {
+                    "oneOf": [
+                        {"type": "string", "enum": sort_values},
+                        {
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 1,
+                            "properties": {
+                                field: {
+                                    "anyOf": [
+                                        {
+                                            "type": "array",
+                                            "items": {},
+                                            "minItems": 1,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "minProperties": 1,
+                                            "maxProperties": 1,
+                                            "properties": {
+                                                "values": {
+                                                    "type": "array",
+                                                    "items": {},
+                                                    "minItems": 1,
+                                                },
+                                                "order": {
+                                                    "type": "array",
+                                                    "items": {},
+                                                    "minItems": 1,
+                                                },
+                                            },
+                                            "additionalProperties": False,
+                                        },
+                                    ]
+                                }
+                                for field in sortable
+                            },
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+                "description": (
+                    "Fields to sort by. Prefix a string with '-' for descending, or "
+                    "map one field to an ordered list of values for custom ranking."
+                ),
             },
             settings.LIMIT_PARAM_NAME: {
                 "type": "integer",
@@ -541,7 +598,7 @@ def build_query_schema(
                 "description": "Number of records to skip.",
             },
             settings.CURSOR_PARAM_NAME: {
-                "type": "string",
+                "anyOf": [{"type": "string"}, {"type": "null"}],
                 "description": (
                     "Opaque marker of the last record of the previous page. Pass back "
                     "the 'next' value verbatim, with the same sort and filter. "
@@ -619,6 +676,7 @@ def build_query_examples(
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
     computed: ComputedRegistry | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> dict[str, Any]:
     """Build OpenAPI examples using real field names from the model.
 
@@ -627,7 +685,9 @@ def build_query_examples(
     """
     import json
 
-    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
+    exposure = resolve_exposure(
+        model, exposed, max_depth, registry, computed, entity_policy
+    )
     fields = exposure.fields[:2] or ["id"]
 
     def _interesting(candidates: list[str], fallback: str) -> str:
@@ -713,9 +773,12 @@ def describe_query(
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
     computed: ComputedRegistry | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> str:
     """Build the human-readable description shown next to ``q`` in Swagger."""
-    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
+    exposure = resolve_exposure(
+        model, exposed, max_depth, registry, computed, entity_policy
+    )
     lines = [
         f"JSON-encoded query for **{model.__name__}**.",
         "",
