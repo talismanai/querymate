@@ -357,8 +357,28 @@ def resolve_exposure(
     )
 
 
-def _field_schema(exposure: ResolvedExposure) -> dict[str, Any]:
-    """Describe the selectable fields and relationships at one level."""
+# Written out where a relationship would repeat a model already on the path. The
+# grammar there is identical to the one already given for that model, so spelling it
+# out again buys nothing and costs a multiple of the whole document.
+_REPEATS = (
+    "Expandable. The grammar repeats what is documented for this model above; it is "
+    "not spelled out again here, but it is accepted up to the maximum depth."
+)
+
+
+def _field_schema(
+    exposure: ResolvedExposure, seen: frozenset[type[SQLModel]] = frozenset()
+) -> dict[str, Any]:
+    """Describe the selectable fields and relationships at one level.
+
+    ``seen`` carries the models already expanded on this path. Models reference each
+    other in both directions, so inlining every level down to ``max_depth`` grows
+    combinatorially - a four-model schema reached several megabytes, which no
+    documentation viewer can render and no client can usefully read. Once a model
+    repeats, the relationship is still offered but its contents are not enumerated
+    again; the query itself is unaffected, only how much of it is written out.
+    """
+    seen = seen | {exposure.model}
     one_of: list[dict[str, Any]] = [
         {
             "type": "string",
@@ -371,13 +391,19 @@ def _field_schema(exposure: ResolvedExposure) -> dict[str, Any]:
         child = exposure.child(name)
         if child is None:
             continue
+        if child.model in seen:
+            relationship_properties[name] = {"description": _REPEATS}
+            continue
         relationship_properties[name] = {
             "oneOf": [
-                {"type": "array", "items": _field_schema(child)},
+                {"type": "array", "items": _field_schema(child, seen)},
                 {
                     "type": "object",
                     "properties": {
-                        "select": {"type": "array", "items": _field_schema(child)},
+                        "select": {
+                            "type": "array",
+                            "items": _field_schema(child, seen),
+                        },
                         "filter": _filter_schema(child),
                     },
                     "additionalProperties": False,

@@ -5,6 +5,7 @@ with no query parameters at all, because the dependency took the whole Request. 
 most powerful part of the API was also the least discoverable.
 """
 
+import json
 from typing import Any
 
 import pytest
@@ -184,6 +185,30 @@ def test_relationship_nesting_stops_at_max_depth() -> None:
     posts = select_items["oneOf"][1]["properties"]["posts"]
     nested_items = posts["oneOf"][0]["items"]
     assert "oneOf" not in nested_items
+
+
+def test_the_schema_stays_a_size_a_reader_can_open() -> None:
+    """Models reference each other both ways; inlining every level explodes.
+
+    Expanding User -> posts -> user -> posts down to the default depth produced a
+    five-megabyte schema for four models - unrenderable in Swagger and useless to a
+    client. Once a model repeats on the path its grammar is not written out again.
+    """
+    schema = build_query_schema(User)
+
+    assert len(json.dumps(schema)) < 200_000
+
+
+def test_a_repeated_model_is_still_offered() -> None:
+    """Not enumerating the grammar again must not mean forbidding the relationship."""
+    schema = build_query_schema(User)
+    select_items = schema["properties"][settings.SELECT_PARAM_NAME]["items"]
+
+    posts = select_items["oneOf"][1]["properties"]["posts"]
+    back_to_user = posts["oneOf"][0]["items"]["oneOf"][1]["properties"]["user"]
+
+    assert "user" in posts["oneOf"][0]["items"]["oneOf"][1]["properties"]
+    assert "repeats" in back_to_user["description"]
 
 
 # ---------------------------------------------------------------------------
