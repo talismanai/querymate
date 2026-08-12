@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel
 
 from querymate.core.exceptions import (
+    InvalidSortError,
     UnknownFieldError,
     UnknownRelationshipError,
 )
@@ -181,8 +182,7 @@ def test_a_scope_restricts_the_windowed_children(db: Session) -> None:
     ]
 
 
-def test_a_child_sort_entry_that_is_not_a_string_is_ignored(db: Session) -> None:
-    """A custom value order cannot rank children inside a window; it is skipped."""
+def test_a_custom_value_order_ranks_children_inside_a_window(db: Session) -> None:
     _seed(db)
 
     result = Querymate(
@@ -194,7 +194,7 @@ def test_a_child_sort_entry_that_is_not_a_string_is_ignored(db: Session) -> None
         limit=1,
     ).run(db, User)
 
-    assert len(result[0]["posts"]) == 1
+    assert result[0]["posts"] == [{"title": "Beta"}]
 
 
 # ---------------------------------------------------------------------------
@@ -222,25 +222,20 @@ def test_the_order_key_is_accepted_too(db: Session) -> None:
     assert [row["id"] for row in result] == [2, 1]
 
 
-def test_a_custom_order_without_a_list_is_ignored(db: Session) -> None:
-    """Warned about and skipped, rather than crashing on a half-written query."""
+def test_a_custom_order_without_a_list_is_rejected(db: Session) -> None:
     _seed(db)
 
-    result = Querymate(select=["id"], sort=[{"name": {"values": "Grace"}}, "id"]).run(
-        db, User
-    )
+    with pytest.raises(InvalidSortError, match="must be a list"):
+        Querymate(select=["id"], sort=[{"name": {"values": "Grace"}}, "id"]).run(
+            db, User
+        )
 
-    assert [row["id"] for row in result] == [1, 2]
 
-
-def test_a_sort_dict_of_an_unexpected_shape_is_ignored(db: Session) -> None:
+def test_a_sort_dict_of_an_unexpected_shape_is_rejected(db: Session) -> None:
     _seed(db)
 
-    result = Querymate(select=["id"], sort=[{"a": ["x"], "b": ["y"]}, "id"]).run(
-        db, User
-    )
-
-    assert [row["id"] for row in result] == [1, 2]
+    with pytest.raises(InvalidSortError, match="exactly one field"):
+        Querymate(select=["id"], sort=[{"a": ["x"], "b": ["y"]}, "id"]).run(db, User)
 
 
 # ---------------------------------------------------------------------------
@@ -306,14 +301,14 @@ def test_grouping_keeps_the_inner_join_restriction(db: Session) -> None:
     assert identifiers == [1]
 
 
-def test_a_custom_order_does_not_rank_rows_inside_a_group(db: Session) -> None:
+def test_a_custom_order_ranks_rows_inside_a_group(db: Session) -> None:
     _seed(db)
 
     result = Querymate(
         select=["id"], sort=[{"name": ["Grace"]}], group_by="status", limit=5
     ).run_grouped(db, User, dialect="sqlite")
 
-    assert result["groups"]
+    assert [item["id"] for item in result["groups"][0]["items"]] == [2, 1]
 
 
 def test_grouped_truncation_reports_itself(

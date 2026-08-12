@@ -6,6 +6,7 @@ Welcome to QueryMate's documentation!
    :caption: Contents:
 
    source/quickstart
+   source/security
    source/installation
    source/contributing
    source/api
@@ -19,4 +20,4 @@ Indices and tables
 
 * :ref:`genindex`
 * :ref:`modindex`
-* :ref:`search` 
+* :ref:`search`

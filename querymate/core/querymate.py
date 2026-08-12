@@ -1,5 +1,6 @@
 import json
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Collection
 from types import new_class
 from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode
@@ -38,14 +39,21 @@ from querymate.core.openapi import (
     resolve_exposure,
 )
 from querymate.core.plan import QueryPlan, build_plan
+from querymate.core.policy import EntityPolicy
 from querymate.core.query_builder import JoinType, QueryBuilder
-from querymate.core.scope import BoundScopes
+from querymate.core.scope import BoundScopes, ScopeRegistry
 from querymate.types import (
+    AggregateResponse,
     CursorInfo,
     CursorPage,
+    CursorResponse,
     FieldSelection,
+    GroupsMeta,
+    GroupsResponse,
     PaginatedResponse,
     PaginationInfo,
+    QuerymateResponse,
+    RecordsResponse,
 )
 
 # Unbound: the engine works with SQLModel table classes and plain SQLAlchemy
@@ -53,6 +61,8 @@ from querymate.types import (
 # type checker while the runtime accepted it.
 T = TypeVar("T")
 R = TypeVar("R")
+_PRINCIPAL_UNSET = object()
+_UNCONFIGURED_WARNING_EMITTED = False
 
 
 def _query_body_model(
@@ -260,6 +270,32 @@ class Querymate(BaseModel):
     _bound_model: ModelClass | None = PrivateAttr(default=None)
     _exposure: ResolvedExposure | None = PrivateAttr(default=None)
     _computed: ComputedRegistry | None = PrivateAttr(default=None)
+    _scope_registry: ScopeRegistry | None = PrivateAttr(default=None)
+    _entity_policy: EntityPolicy | None = PrivateAttr(default=None)
+
+    @classmethod
+    def setup(
+        cls,
+        *,
+        scopes: ScopeRegistry,
+        resources: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
+        allowed_entities: Collection[ModelClass] | None = None,
+        blocked_entities: Collection[ModelClass] | None = None,
+    ) -> "ConfiguredQuerymate":
+        """Configure QueryMate once with strict authorization and entity policy.
+
+        The returned facade builds all dependencies with the same resources, computed
+        fields, strict scope registry, and optional allow/block lists. A block always
+        wins; declaring the same entity in both lists is a setup error.
+        """
+        return ConfiguredQuerymate(
+            query_type=cls,
+            scopes=scopes,
+            resources=resources,
+            computed=computed,
+            entity_policy=EntityPolicy.create(allowed_entities, blocked_entities),
+        )
 
     def _resolve_model(self, model: type[T] | None) -> type[T]:
         """Return the model to query, falling back to the one bound by for_model()."""
@@ -270,6 +306,41 @@ class Querymate(BaseModel):
                 "Querymate.for_model(Model) so it is bound."
             )
         return cast(type[T], resolved)
+
+    def _execution_scopes(
+        self,
+        db: Session | AsyncSession,
+        scopes: BoundScopes | None,
+        principal: Any,
+    ) -> BoundScopes | None:
+        """Bind configured strict scopes, or preserve the legacy explicit path."""
+        if self._scope_registry is not None:
+            if scopes is not None:
+                raise TypeError(
+                    "Configured QueryMate binds scopes automatically; pass "
+                    "principal=... instead of scopes=...."
+                )
+            if principal is _PRINCIPAL_UNSET:
+                raise TypeError(
+                    "Configured QueryMate requires principal=... when running."
+                )
+            return self._scope_registry.bind(principal=principal, db=db, strict=True)
+
+        if principal is not _PRINCIPAL_UNSET:
+            raise TypeError(
+                "principal=... requires a Querymate.setup(scopes=...) configuration."
+            )
+        global _UNCONFIGURED_WARNING_EMITTED
+        if not _UNCONFIGURED_WARNING_EMITTED:
+            warnings.warn(
+                "Running Querymate without Querymate.setup(...) is deprecated and "
+                "does not enforce an application-wide entity policy. Configure "
+                "strict scopes and pass principal=... instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            _UNCONFIGURED_WARNING_EMITTED = True
+        return scopes
 
     @classmethod
     def from_qs(cls, query_params: QueryParams) -> "Querymate":
@@ -350,6 +421,8 @@ class Querymate(BaseModel):
         max_depth: int | None = None,
         resources: ResourceRegistry | None = None,
         computed: ComputedRegistry | None = None,
+        _scope_registry: ScopeRegistry | None = None,
+        _entity_policy: EntityPolicy | None = None,
     ) -> Callable[..., "Querymate"]:
         """Build a FastAPI dependency that documents and enforces queries for a model.
 
@@ -388,9 +461,17 @@ class Querymate(BaseModel):
                 return q.run(db)
             ```
         """
-        schema = build_query_schema(model, exposed, max_depth, resources, computed)
-        description = describe_query(model, exposed, max_depth, resources, computed)
-        examples = build_query_examples(model, exposed, max_depth, resources, computed)
+        if _entity_policy is not None:
+            _entity_policy.check(model, path=model.__name__, operation="root")
+        schema = build_query_schema(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
+        description = describe_query(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
+        examples = build_query_examples(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
 
         def dependency(
             q: Annotated[
@@ -410,9 +491,11 @@ class Querymate(BaseModel):
             instance = cls._parse(q) if q else cls()
             instance._bound_model = model
             instance._exposure = resolve_exposure(
-                model, exposed, max_depth, resources, computed
+                model, exposed, max_depth, resources, computed, _entity_policy
             )
             instance._computed = computed
+            instance._scope_registry = _scope_registry
+            instance._entity_policy = _entity_policy
             return instance
 
         dependency.__name__ = f"{model.__name__}Query"
@@ -424,7 +507,7 @@ class Querymate(BaseModel):
             "exposed": exposed,
             "transport": "query",
             "exposure": resolve_exposure(
-                model, exposed, max_depth, resources, computed
+                model, exposed, max_depth, resources, computed, _entity_policy
             ),
         }
         return dependency
@@ -438,6 +521,8 @@ class Querymate(BaseModel):
         max_depth: int | None = None,
         resources: ResourceRegistry | None = None,
         computed: ComputedRegistry | None = None,
+        _scope_registry: ScopeRegistry | None = None,
+        _entity_policy: EntityPolicy | None = None,
     ) -> Callable[..., "Querymate"]:
         """The same query, sent as a JSON body instead of a URL parameter.
 
@@ -463,9 +548,17 @@ class Querymate(BaseModel):
         Returns:
             A dependency returning a Querymate bound to ``model``.
         """
-        schema = build_query_schema(model, exposed, max_depth, resources, computed)
-        description = describe_query(model, exposed, max_depth, resources, computed)
-        examples = build_query_examples(model, exposed, max_depth, resources, computed)
+        if _entity_policy is not None:
+            _entity_policy.check(model, path=model.__name__, operation="root")
+        schema = build_query_schema(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
+        description = describe_query(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
+        examples = build_query_examples(
+            model, exposed, max_depth, resources, computed, _entity_policy
+        )
         body_model = _query_body_model(model, schema)
 
         def dependency(
@@ -477,9 +570,11 @@ class Querymate(BaseModel):
             instance = cls.validate_query(body.root)  # type: ignore[attr-defined]
             instance._bound_model = model
             instance._exposure = resolve_exposure(
-                model, exposed, max_depth, resources, computed
+                model, exposed, max_depth, resources, computed, _entity_policy
             )
             instance._computed = computed
+            instance._scope_registry = _scope_registry
+            instance._entity_policy = _entity_policy
             return instance
 
         dependency.__name__ = f"{model.__name__}QueryBody"
@@ -488,7 +583,7 @@ class Querymate(BaseModel):
             "exposed": exposed,
             "transport": "body",
             "exposure": resolve_exposure(
-                model, exposed, max_depth, resources, computed
+                model, exposed, max_depth, resources, computed, _entity_policy
             ),
         }
         return dependency
@@ -512,7 +607,38 @@ class Querymate(BaseModel):
         aggregate and a filterless query has no filter; spelling that out inflates
         every URL with the parts of the grammar the caller did not use.
         """
-        return self.model_dump_json(by_alias=True, exclude_none=True)
+        payload = self.model_dump(by_alias=True, exclude_none=True)
+        if "cursor" in self.model_fields_set:
+            payload[settings.CURSOR_PARAM_NAME] = self.cursor
+        return json.dumps(payload, separators=(",", ":"), default=str)
+
+    def _mode(self) -> Literal["records", "cursor", "groups", "aggregate"]:
+        """Infer one execution mode from the query document."""
+        cursor_requested = "cursor" in self.model_fields_set
+        if cursor_requested and (
+            self.aggregate is not None or self.group_by is not None or self.having
+        ):
+            raise InvalidQueryError(
+                "Cursor pagination cannot be combined with aggregate, group_by, or having."
+            )
+        if self.having and self.aggregate is None:
+            raise InvalidQueryError("'having' requires an 'aggregate' block.")
+        if self.aggregate is not None:
+            return "aggregate"
+        if self.group_by is not None:
+            return "groups"
+        if cursor_requested:
+            return "cursor"
+        return "records"
+
+    @staticmethod
+    def _deprecated_method(name: str) -> None:
+        warnings.warn(
+            f"{name}() is deprecated; use run() or run_async(), which infer the "
+            "mode and always return the {kind, items, meta} envelope.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def to_qs(self) -> str:
         """Convert the QueryMate instance to a query string.
@@ -665,8 +791,14 @@ class Querymate(BaseModel):
             scopes=scopes,
             exposure=self._exposure,
             computed=self._computed,
+            entity_policy=self._entity_policy,
         )
-        query_builder.prepare_scopes(self.select)
+        query_builder.prepare_scopes(
+            self.select,
+            filter_dict=self.filter,
+            sort=self.sort,
+            group_by=self.group_by,
+        )
         query_builder.build(
             select=self.select,
             filter=self.filter,
@@ -693,8 +825,14 @@ class Querymate(BaseModel):
             scopes=scopes,
             exposure=self._exposure,
             computed=self._computed,
+            entity_policy=self._entity_policy,
         )
-        await query_builder.prepare_scopes_async(self.select)
+        await query_builder.prepare_scopes_async(
+            self.select,
+            filter_dict=self.filter,
+            sort=self.sort,
+            group_by=self.group_by,
+        )
         query_builder.build(
             select=self.select,
             filter=self.filter,
@@ -713,6 +851,7 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
+        principal: Any = _PRINCIPAL_UNSET,
     ) -> list[T]:
         """Build and execute the query based on the parameters.
 
@@ -728,7 +867,8 @@ class Querymate(BaseModel):
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        return self._make_builder(model, scopes).fetch(db)
+        bound_scopes = self._execution_scopes(db, scopes, principal)
+        return self._make_builder(model, bound_scopes).fetch(db)
 
     def run(
         self,
@@ -736,7 +876,9 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> list[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> QuerymateResponse | list[dict[str, Any]]:
         """Build and execute the query based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -769,9 +911,35 @@ class Querymate(BaseModel):
             )
             ```
         """
-        query_builder = self._make_builder(model, scopes)
+        bound_scopes = self._execution_scopes(db, scopes, principal)
+        mode = self._mode()
+        if mode == "cursor":
+            return self._execute_cursor(db, model, bound_scopes)
+        if mode == "groups":
+            return self._execute_groups(db, model, bound_scopes, dialect)
+        if mode == "aggregate":
+            return self._execute_aggregate(db, model, bound_scopes, dialect)
+        if self._scope_registry is None:
+            query_builder = self._make_builder(model, bound_scopes)
+            return query_builder.serialize(query_builder.fetch(db))
+        return self._execute_records(db, model, bound_scopes)
+
+    def _execute_records(
+        self,
+        db: Session,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+    ) -> RecordsResponse[dict[str, Any]]:
+        """Execute the records mode after authorization has been bound."""
+        exact = self._counts_exactly(True)
+        query_builder = self._make_builder(model, scopes, probe=not exact)
         data: list[Any] = query_builder.fetch(db)
-        return query_builder.serialize(data)
+        data, has_next_page = self._trim_probe(data, exact)
+        total = query_builder.count(db) if exact else None
+        return RecordsResponse(
+            items=query_builder.serialize(data),
+            meta=self._pagination(total, has_next_page),
+        )
 
     def run_paginated(
         self,
@@ -779,7 +947,8 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> PaginatedResponse[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> RecordsResponse[dict[str, Any]] | PaginatedResponse[dict[str, Any]]:
         """Build and execute the query with pagination metadata.
 
         The count is a second pass over the filtered set. It runs by default, because
@@ -794,17 +963,13 @@ class Querymate(BaseModel):
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        exact = self._counts_exactly(True)
-        query_builder = self._make_builder(model, scopes, probe=not exact)
-        data: list[Any] = query_builder.fetch(db)
-        data, has_next_page = self._trim_probe(data, exact)
-        serialized = query_builder.serialize(data)
-        total = query_builder.count(db) if exact else None
-
-        return PaginatedResponse(
-            items=serialized,
-            pagination=self._pagination(total, has_next_page),
+        self._deprecated_method("run_paginated")
+        response = self._execute_records(
+            db, model, self._execution_scopes(db, scopes, principal)
         )
+        if self._scope_registry is None:
+            return PaginatedResponse(items=response.items, pagination=response.meta)
+        return response
 
     # -------------------------------------------------------------------------
     # Cursor Pagination
@@ -816,7 +981,8 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> CursorPage[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> CursorResponse[dict[str, Any]] | CursorPage[dict[str, Any]]:
         """Return one page located by cursor rather than by offset.
 
         ``offset`` makes the database find and discard N rows before returning any,
@@ -841,6 +1007,21 @@ class Querymate(BaseModel):
             ).run_cursor_paginated(db, Post)
             ```
         """
+        self._deprecated_method("run_cursor_paginated")
+        response = self._execute_cursor(
+            db, model, self._execution_scopes(db, scopes, principal)
+        )
+        if self._scope_registry is None:
+            return CursorPage(items=response.items, cursor=response.meta)
+        return response
+
+    def _execute_cursor(
+        self,
+        db: Session,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+    ) -> CursorResponse[dict[str, Any]]:
+        """Execute cursor mode after authorization has been bound."""
         builder, size = self._cursor_builder(model, scopes)
         return self._cursor_page(builder, builder.fetch(db), size, db)
 
@@ -850,8 +1031,23 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> CursorPage[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> CursorResponse[dict[str, Any]] | CursorPage[dict[str, Any]]:
         """Async counterpart of :meth:`run_cursor_paginated`."""
+        self._deprecated_method("run_cursor_paginated_async")
+        bound_scopes = self._execution_scopes(db, scopes, principal)
+        response = await self._execute_cursor_async(db, model, bound_scopes)
+        if self._scope_registry is None:
+            return CursorPage(items=response.items, cursor=response.meta)
+        return response
+
+    async def _execute_cursor_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+    ) -> CursorResponse[dict[str, Any]]:
+        """Execute async cursor mode after authorization has been bound."""
         builder, size = await self._cursor_builder_async(model, scopes)
         rows: list[Any] = await builder.fetch_async(db)
         total = await builder.count_async(db) if self._counts_exactly(False) else None
@@ -866,8 +1062,9 @@ class Querymate(BaseModel):
             scopes=scopes,
             exposure=self._exposure,
             computed=self._computed,
+            entity_policy=self._entity_policy,
         )
-        builder.prepare_scopes(self.select)
+        builder.prepare_scopes(self.select, filter_dict=self.filter, sort=self.sort)
         return self._finish_cursor_builder(builder)
 
     async def _cursor_builder_async(
@@ -879,8 +1076,11 @@ class Querymate(BaseModel):
             scopes=scopes,
             exposure=self._exposure,
             computed=self._computed,
+            entity_policy=self._entity_policy,
         )
-        await builder.prepare_scopes_async(self.select)
+        await builder.prepare_scopes_async(
+            self.select, filter_dict=self.filter, sort=self.sort
+        )
         return self._finish_cursor_builder(builder)
 
     def _finish_cursor_builder(self, builder: QueryBuilder) -> tuple[QueryBuilder, int]:
@@ -907,15 +1107,15 @@ class Querymate(BaseModel):
         size: int,
         db: Session | None = None,
         total: int | None = None,
-    ) -> CursorPage[dict[str, Any]]:
+    ) -> CursorResponse[dict[str, Any]]:
         """Trim the probe row, encode the next cursor, and shape the response."""
         has_more = len(rows) > size
         page = rows[:size]
         if db is not None and self._counts_exactly(False):
             total = builder.count(db)
-        return CursorPage(
+        return CursorResponse(
             items=builder.serialize(page),
-            cursor=CursorInfo(
+            meta=CursorInfo(
                 next=builder.cursor_for(page[-1]) if has_more and page else None,
                 has_more=has_more,
                 total=total,
@@ -928,7 +1128,9 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> list[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> QuerymateResponse | list[dict[str, Any]]:
         """Build and execute the query asynchronously based on the parameters.
 
         This method combines filtering, sorting, pagination, and field selection
@@ -956,9 +1158,36 @@ class Querymate(BaseModel):
             results = await querymate.run_async(db, User)
             ```
         """
-        query_builder = await self._make_builder_async(model, scopes)
+        bound_scopes = self._execution_scopes(db, scopes, principal)
+        mode = self._mode()
+        if mode == "cursor":
+            return await self._execute_cursor_async(db, model, bound_scopes)
+        if mode == "groups":
+            return await self._execute_groups_async(db, model, bound_scopes, dialect)
+        if mode == "aggregate":
+            return await self._execute_aggregate_async(db, model, bound_scopes, dialect)
+        if self._scope_registry is None:
+            query_builder = await self._make_builder_async(model, bound_scopes)
+            data: list[Any] = await query_builder.fetch_async(db)
+            return query_builder.serialize(data)
+        return await self._execute_records_async(db, model, bound_scopes)
+
+    async def _execute_records_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+    ) -> RecordsResponse[dict[str, Any]]:
+        """Execute async records mode after authorization has been bound."""
+        exact = self._counts_exactly(True)
+        query_builder = await self._make_builder_async(model, scopes, probe=not exact)
         data: list[Any] = await query_builder.fetch_async(db)
-        return query_builder.serialize(data)
+        data, has_next_page = self._trim_probe(data, exact)
+        total = await query_builder.count_async(db) if exact else None
+        return RecordsResponse(
+            items=query_builder.serialize(data),
+            meta=self._pagination(total, has_next_page),
+        )
 
     async def run_async_paginated(
         self,
@@ -966,7 +1195,8 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
-    ) -> PaginatedResponse[dict[str, Any]]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> RecordsResponse[dict[str, Any]] | PaginatedResponse[dict[str, Any]]:
         """Build and execute the query asynchronously with pagination metadata.
 
         Args:
@@ -976,17 +1206,13 @@ class Querymate(BaseModel):
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
         """
-        exact = self._counts_exactly(True)
-        query_builder = await self._make_builder_async(model, scopes, probe=not exact)
-        data: list[Any] = await query_builder.fetch_async(db)
-        data, has_next_page = self._trim_probe(data, exact)
-        serialized = query_builder.serialize(data)
-        total = await query_builder.count_async(db) if exact else None
-
-        return PaginatedResponse(
-            items=serialized,
-            pagination=self._pagination(total, has_next_page),
+        self._deprecated_method("run_async_paginated")
+        response = await self._execute_records_async(
+            db, model, self._execution_scopes(db, scopes, principal)
         )
+        if self._scope_registry is None:
+            return PaginatedResponse(items=response.items, pagination=response.meta)
+        return response
 
     async def run_raw_async(
         self,
@@ -994,6 +1220,7 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
+        principal: Any = _PRINCIPAL_UNSET,
     ) -> list[T]:
         """Build and execute the query asynchronously based on the parameters.
 
@@ -1007,7 +1234,8 @@ class Querymate(BaseModel):
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.
         """
-        query_builder = await self._make_builder_async(model, scopes)
+        bound_scopes = self._execution_scopes(db, scopes, principal)
+        query_builder = await self._make_builder_async(model, bound_scopes)
         return await query_builder.fetch_async(db)
 
     # -------------------------------------------------------------------------
@@ -1020,8 +1248,9 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
+        principal: Any = _PRINCIPAL_UNSET,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
-    ) -> dict[str, Any]:
+    ) -> AggregateResponse | dict[str, Any]:
         """Compute aggregates, optionally grouped.
 
         A separate mode with its own envelope rather than a variation of ``run()``:
@@ -1042,16 +1271,40 @@ class Querymate(BaseModel):
             querymate.run_aggregated(db, Order)
             ```
         """
+        self._deprecated_method("run_aggregated")
+        response = self._execute_aggregate(
+            db,
+            model,
+            self._execution_scopes(db, scopes, principal),
+            dialect,
+        )
+        if self._scope_registry is None:
+            return {"results": response.items}
+        return response
+
+    def _execute_aggregate(
+        self,
+        db: Session,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> AggregateResponse:
+        """Execute aggregate mode after authorization has been bound."""
         aggregations = parse_aggregations(self.aggregate)
         builder = self._aggregate_builder(model, scopes)
-        builder.prepare_scopes([])
+        builder.prepare_scopes(
+            [],
+            filter_dict=self.filter,
+            group_by=self.group_by,
+            aggregate_fields=[aggregation.field for aggregation in aggregations],
+        )
         builder.apply_filter(self.filter)
         group_config, extractor = self._aggregate_grouping(dialect)
-        return {
-            "results": builder.aggregate(
+        return AggregateResponse(
+            items=builder.aggregate(
                 db, aggregations, group_config, extractor, self.having
             )
-        }
+        )
 
     async def run_aggregated_async(
         self,
@@ -1059,19 +1312,44 @@ class Querymate(BaseModel):
         model: type[T] | None = None,
         *,
         scopes: BoundScopes | None = None,
+        principal: Any = _PRINCIPAL_UNSET,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
-    ) -> dict[str, Any]:
+    ) -> AggregateResponse | dict[str, Any]:
         """Async counterpart of :meth:`run_aggregated`."""
+        self._deprecated_method("run_aggregated_async")
+        response = await self._execute_aggregate_async(
+            db,
+            model,
+            self._execution_scopes(db, scopes, principal),
+            dialect,
+        )
+        if self._scope_registry is None:
+            return {"results": response.items}
+        return response
+
+    async def _execute_aggregate_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> AggregateResponse:
+        """Execute async aggregate mode after authorization has been bound."""
         aggregations = parse_aggregations(self.aggregate)
         builder = self._aggregate_builder(model, scopes)
-        await builder.prepare_scopes_async([])
+        await builder.prepare_scopes_async(
+            [],
+            filter_dict=self.filter,
+            group_by=self.group_by,
+            aggregate_fields=[aggregation.field for aggregation in aggregations],
+        )
         builder.apply_filter(self.filter)
         group_config, extractor = self._aggregate_grouping(dialect)
-        return {
-            "results": await builder.aggregate_async(
+        return AggregateResponse(
+            items=await builder.aggregate_async(
                 db, aggregations, group_config, extractor, self.having
             )
-        }
+        )
 
     def _aggregate_builder(
         self, model: type[T] | None, scopes: BoundScopes | None
@@ -1088,6 +1366,7 @@ class Querymate(BaseModel):
             scopes=scopes,
             exposure=self._exposure,
             computed=self._computed,
+            entity_policy=self._entity_policy,
         )
 
     def _aggregate_grouping(
@@ -1124,7 +1403,8 @@ class Querymate(BaseModel):
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
         scopes: BoundScopes | None = None,
-    ) -> dict[str, Any]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> GroupsResponse | dict[str, Any]:
         """Build and execute a grouped query based on the parameters.
 
         Groups results by the specified field. Each group contains items paginated
@@ -1159,6 +1439,25 @@ class Querymate(BaseModel):
             results = querymate.run_grouped(db, Task)
             ```
         """
+        self._deprecated_method("run_grouped")
+        response = self._execute_groups(
+            db,
+            model,
+            self._execution_scopes(db, scopes, principal),
+            dialect,
+        )
+        if self._scope_registry is None:
+            return {"groups": response.items, "truncated": response.meta.truncated}
+        return response
+
+    def _execute_groups(
+        self,
+        db: Session,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> GroupsResponse:
+        """Execute grouped records mode after authorization has been bound."""
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
@@ -1190,7 +1489,7 @@ class Querymate(BaseModel):
         group_keys: list[tuple[Any, int]] | None,
         items_by_key: dict[Any, list[Any]],
         per_group_limit: int,
-    ) -> dict[str, Any]:
+    ) -> GroupsResponse:
         """Serialize the fetched groups and apply the overall cap.
 
         Every group's page is already loaded; this only decides how many of them fit
@@ -1248,7 +1547,11 @@ class Querymate(BaseModel):
         if len(groups) < len(entries):
             truncated = True
 
-        return GroupedResponse(groups=groups, truncated=truncated).model_dump()
+        grouped = GroupedResponse(groups=groups, truncated=truncated)
+        return GroupsResponse(
+            items=[group.model_dump() for group in grouped.groups],
+            meta=GroupsMeta(truncated=grouped.truncated),
+        )
 
     async def run_grouped_async(
         self,
@@ -1257,7 +1560,8 @@ class Querymate(BaseModel):
         *,
         dialect: Literal["postgresql", "sqlite"] = "postgresql",
         scopes: BoundScopes | None = None,
-    ) -> dict[str, Any]:
+        principal: Any = _PRINCIPAL_UNSET,
+    ) -> GroupsResponse | dict[str, Any]:
         """Build and execute a grouped query asynchronously.
 
         Groups results by the specified field. Each group contains items paginated
@@ -1292,6 +1596,25 @@ class Querymate(BaseModel):
             results = await querymate.run_grouped_async(db, Task)
             ```
         """
+        self._deprecated_method("run_grouped_async")
+        response = await self._execute_groups_async(
+            db,
+            model,
+            self._execution_scopes(db, scopes, principal),
+            dialect,
+        )
+        if self._scope_registry is None:
+            return {"groups": response.items, "truncated": response.meta.truncated}
+        return response
+
+    async def _execute_groups_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None,
+        scopes: BoundScopes | None,
+        dialect: Literal["postgresql", "sqlite"],
+    ) -> GroupsResponse:
+        """Execute async grouped records mode after authorization has been bound."""
         group_config = self._get_group_config()
         extractor = GroupKeyExtractor(dialect=dialect)
 
@@ -1359,4 +1682,59 @@ class Querymate(BaseModel):
             previous_page=previous_page,
             next_page=next_page,
             has_next_page=next_page is not None,
+        )
+
+
+class ConfiguredQuerymate:
+    """Application facade returned by :meth:`Querymate.setup`."""
+
+    def __init__(
+        self,
+        *,
+        query_type: type[Querymate],
+        scopes: ScopeRegistry,
+        resources: ResourceRegistry | None,
+        computed: ComputedRegistry | None,
+        entity_policy: EntityPolicy,
+    ) -> None:
+        self.query_type = query_type
+        self.scopes = scopes
+        self.resources = resources
+        self.computed = computed
+        self.entity_policy = entity_policy
+
+    def for_model(
+        self,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+    ) -> Callable[..., Querymate]:
+        """Build a configured query-parameter dependency for ``model``."""
+        return self.query_type.for_model(
+            model,
+            exposed=exposed,
+            max_depth=max_depth,
+            resources=self.resources,
+            computed=self.computed,
+            _scope_registry=self.scopes,
+            _entity_policy=self.entity_policy,
+        )
+
+    def body_for_model(
+        self,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+    ) -> Callable[..., Querymate]:
+        """Build a configured JSON-body dependency for ``model``."""
+        return self.query_type.body_for_model(
+            model,
+            exposed=exposed,
+            max_depth=max_depth,
+            resources=self.resources,
+            computed=self.computed,
+            _scope_registry=self.scopes,
+            _entity_policy=self.entity_policy,
         )

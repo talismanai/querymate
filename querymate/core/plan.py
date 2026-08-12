@@ -142,7 +142,7 @@ def build_plan(query: Any, model_name: str) -> QueryPlan:
         body["aggregate"] = _canonical(query.aggregate)
     if query.having:
         body["having"] = _canonical(query.having)
-    if query.cursor:
+    if "cursor" in query.model_fields_set:
         body["cursor"] = query.cursor
     if query.count:
         body["count"] = query.count

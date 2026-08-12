@@ -1,8 +1,8 @@
 """Type definitions for Querymate responses."""
 
-from typing import Any, Generic, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import TypeAliasType
 
 T = TypeVar("T")
@@ -71,8 +71,77 @@ class CursorPage(BaseModel, Generic[T]):
     cursor: CursorInfo
 
 
-# Type alias for flexible response that can be either paginated or just items
-QuerymateResponse = list[dict[str, Any]] | dict[str, Any]
+class RecordsResponse(BaseModel, Generic[T]):
+    """The stable envelope for ordinary offset-paginated records."""
+
+    kind: Literal["records"] = "records"
+    items: list[T]
+    meta: PaginationInfo
+
+    @property
+    def pagination(self) -> PaginationInfo:
+        """Deprecated alias retained while callers migrate to ``meta``."""
+        return self.meta
+
+
+class CursorResponse(BaseModel, Generic[T]):
+    """The stable envelope for cursor-paginated records."""
+
+    kind: Literal["cursor"] = "cursor"
+    items: list[T]
+    meta: CursorInfo
+
+    @property
+    def cursor(self) -> CursorInfo:
+        """Deprecated alias retained while callers migrate to ``meta``."""
+        return self.meta
+
+
+class GroupsMeta(BaseModel):
+    """Metadata applying to the grouped response as a whole."""
+
+    truncated: bool = False
+
+
+class GroupsResponse(BaseModel):
+    """The stable envelope for grouped record pages."""
+
+    kind: Literal["groups"] = "groups"
+    items: list[dict[str, Any]]
+    meta: GroupsMeta
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "groups":
+            return self.items
+        if key == "truncated":
+            return self.meta.truncated
+        raise KeyError(key)
+
+
+class AggregateMeta(BaseModel):
+    """Reserved metadata namespace for aggregate responses."""
+
+
+class AggregateResponse(BaseModel):
+    """The stable envelope for aggregate rows."""
+
+    kind: Literal["aggregate"] = "aggregate"
+    items: list[dict[str, Any]]
+    meta: AggregateMeta = Field(default_factory=AggregateMeta)
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "results":
+            return self.items
+        raise KeyError(key)
+
+
+QuerymateResponse = Annotated[
+    RecordsResponse[dict[str, Any]]
+    | CursorResponse[dict[str, Any]]
+    | GroupsResponse
+    | AggregateResponse,
+    Field(discriminator="kind"),
+]
 
 
 # More specific type for when we know the structure

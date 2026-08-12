@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapper
 from sqlmodel import inspect
 
 from querymate.core.compat import ModelClass
+from querymate.core.policy import EntityPolicy
 
 # A custom computed field is a callable returning a SQL expression for the model.
 ComputedExpression = Callable[[ModelClass], Any]
@@ -77,7 +78,9 @@ class ComputedRegistry:
         return self._fields.get(model, {}).get(name)
 
 
-def relationship_count_fields(model: ModelClass) -> list[str]:
+def relationship_count_fields(
+    model: ModelClass, entity_policy: EntityPolicy | None = None
+) -> list[str]:
     """Return the ``<relationship>_count`` field available for each collection.
 
     Only collections get one: counting a to-one relationship is always zero or one,
@@ -88,10 +91,16 @@ def relationship_count_fields(model: ModelClass) -> list[str]:
         f"{name}{COUNT_SUFFIX}"
         for name, relationship in mapper.relationships.items()
         if relationship.uselist
+        and (entity_policy is None or entity_policy.permits(relationship.mapper.class_))
     )
 
 
-def _count_expression(model: ModelClass, relationship_name: str) -> Any:
+def _count_expression(
+    model: ModelClass,
+    relationship_name: str,
+    scope_for: Callable[[ModelClass], Any | None] | None = None,
+    entity_policy: EntityPolicy | None = None,
+) -> Any:
     """Build the correlated subquery counting a relationship's rows.
 
     A correlated subquery rather than a join or an eager load: it adds one column to
@@ -101,11 +110,21 @@ def _count_expression(model: ModelClass, relationship_name: str) -> Any:
     mapper: Mapper = inspect(model)
     relationship = mapper.relationships[relationship_name]
     target = relationship.mapper.class_
+    if entity_policy is not None:
+        entity_policy.check(
+            target,
+            path=f"{model.__name__}.{relationship_name}{COUNT_SUFFIX}",
+            operation="computed",
+        )
 
     # For many-to-many both halves of the join are needed to reach the target rows.
     conditions: list[Any] = [relationship.primaryjoin]
     if relationship.secondary is not None:
         conditions.append(relationship.secondaryjoin)
+    if scope_for is not None:
+        target_scope = scope_for(target)
+        if target_scope is not None:
+            conditions.append(target_scope)
     counted = inspect(target).primary_key[0]
 
     condition = conditions[0]
@@ -118,17 +137,23 @@ def _count_expression(model: ModelClass, relationship_name: str) -> Any:
 
 
 def computed_names(
-    model: ModelClass, registry: ComputedRegistry | None = None
+    model: ModelClass,
+    registry: ComputedRegistry | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> list[str]:
     """All computed field names available on a model."""
-    names = relationship_count_fields(model)
+    names = relationship_count_fields(model, entity_policy)
     if registry is not None:
         names += registry.names(model)
     return sorted(names)
 
 
 def computed_expression(
-    model: ModelClass, name: str, registry: ComputedRegistry | None = None
+    model: ModelClass,
+    name: str,
+    registry: ComputedRegistry | None = None,
+    scope_for: Callable[[ModelClass], Any | None] | None = None,
+    entity_policy: EntityPolicy | None = None,
 ) -> Any:
     """Return the SQL expression for a computed field.
 
@@ -146,7 +171,7 @@ def computed_expression(
         mapper: Mapper = inspect(model)
         relationship = mapper.relationships.get(relationship_name)
         if relationship is not None and relationship.uselist:
-            return _count_expression(model, relationship_name)
+            return _count_expression(model, relationship_name, scope_for, entity_policy)
 
     raise KeyError(f"{name} is not a computed field of {model.__name__}")
 

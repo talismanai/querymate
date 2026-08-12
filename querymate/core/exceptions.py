@@ -47,6 +47,27 @@ class InvalidQueryError(QuerymateError, ValueError):
     """
 
 
+class InvalidSortError(QuerymateError, ValueError):
+    """A sort entry is malformed and cannot be applied faithfully."""
+
+    def __init__(self, sort: Any, detail: str) -> None:
+        super().__init__(detail, sort=sort)
+
+
+class EntityNotPermittedError(QuerymateError, PermissionError):
+    """A query attempts to access an entity forbidden by application policy."""
+
+    status_code = 403
+
+    def __init__(self, entity: str, path: str, operation: str) -> None:
+        super().__init__(
+            f"Entity '{entity}' is not permitted for this query.",
+            entity=entity,
+            path=path,
+            operation=operation,
+        )
+
+
 class UnknownFieldError(QuerymateError, AttributeError):
     """A requested field does not exist on the model.
 
