@@ -57,6 +57,24 @@ The Pydantic fallback is not decoration: SQLModel maps ``str`` to its own
 ``AutoString``, whose ``python_type`` raises, so without it no SQLModel string field
 would be recognised. Plain SQLAlchemy models never need it.
 
+How this is kept true
+---------------------
+
+Not by inspection. ``tests/orm_parity`` declares two hierarchies of identical shape —
+one SQLModel, one SQLAlchemy declarative — with the same fields, nullability,
+relationship directions and cardinalities, and runs the whole surface against both
+with the same data and the same assertions: every filter operator, sorting including
+across relationships, all four relationship kinds, three-level nesting, child filters
+and per-parent paging, offset and cursor pagination, counted and uncounted, grouping
+by field and by date granularity, aggregation with ``having``, computed counts
+including many-to-many, row scopes, field grants, ``Exposed``, the error contract, the
+generated schema, the descriptor, the HTTP surface in both transports, and the async
+path.
+
+Each session type is used with the ORM that ships it, and one test runs all four
+pairings — a SQLModel session with declarative models and vice versa — because a
+migrating application has both.
+
 What is refused
 ---------------
 

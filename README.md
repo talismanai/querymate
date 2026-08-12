@@ -32,7 +32,7 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 🎨 Field Selection            | Select specific fields to return                                           |
 | 🏗️ Query Building             | Build SQL queries programmatically                                         |
 | ⚡ Async Support              | Full support for async database operations                                 |
-| 🧩 SQLModel *or* SQLAlchemy   | Works with either, detected from the model — nothing to configure          |
+| 🧩 SQLModel *or* SQLAlchemy   | Either ORM, detected from the model; the whole surface tested against both |
 | 📦 Serialization              | Built-in serialization with support for relationships                      |
 | 📁 Grouping                   | Group results by field with date granularity and timezone support          |
 | 🔐 Authorization Scopes       | Apply your app's access rules to every model a query loads                 |
