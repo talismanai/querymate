@@ -903,7 +903,9 @@ def test_join_type_in_querystring(db: Session) -> None:
 
     # Parse from query string
     query_params = QueryParams(
-        {"q": '{"select": ["id", "name", {"posts": ["id", "title"]}], "join_type": "left"}'}
+        {
+            "q": '{"select": ["id", "name", {"posts": ["id", "title"]}], "join_type": "left"}'
+        }
     )
     querymate = Querymate.from_qs(query_params)
 

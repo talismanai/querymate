@@ -956,7 +956,9 @@ class QueryBuilder:
 
         # Build a fresh query for this group
         group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
+        group_builder.apply_select(
+            self.select if self.select else None, join_type=join_type
+        )
 
         # Combine existing filters with group filter
         combined_filter = dict(self.filter) if self.filter else {}
@@ -1006,7 +1008,9 @@ class QueryBuilder:
         group_expr = extractor.get_group_key_expression(column, group_config)
 
         group_builder = QueryBuilder(model)
-        group_builder.apply_select(self.select if self.select else None, join_type=join_type)
+        group_builder.apply_select(
+            self.select if self.select else None, join_type=join_type
+        )
 
         combined_filter = dict(self.filter) if self.filter else {}
         group_builder.apply_filter(combined_filter)

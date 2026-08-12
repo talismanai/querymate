@@ -4,7 +4,7 @@ This module provides support for grouping query results by field values,
 including dynamic date grouping with timezone support.
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -16,7 +16,7 @@ from querymate.core.config import settings
 from querymate.types import PaginationInfo
 
 
-class DateGranularity(str, Enum):
+class DateGranularity(StrEnum):
     """Supported date granularities for grouping."""
 
     YEAR = "year"

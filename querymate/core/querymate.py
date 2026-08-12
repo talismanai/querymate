@@ -77,45 +77,45 @@ class Querymate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    select: list[FieldSelection] | None = Field(  # type: ignore[literal-required]
+    select: list[FieldSelection] | None = Field(
         default=[],
         description="Fields to include in the response",
         alias=settings.SELECT_PARAM_NAME,
     )
-    filter: FilterCondition | None = Field(  # type: ignore[literal-required]
+    filter: FilterCondition | None = Field(
         default={},
         description="Filter conditions for the query",
         alias=settings.FILTER_PARAM_NAME,
     )
-    sort: list[Any] | None = Field(  # type: ignore[literal-required]
+    sort: list[Any] | None = Field(
         default=[],
         description="List of fields to sort by",
         alias=settings.SORT_PARAM_NAME,
     )
-    limit: int | None = Field(  # type: ignore[literal-required]
+    limit: int | None = Field(
         default=settings.DEFAULT_LIMIT,
         ge=1,
         le=settings.MAX_LIMIT,
         description="Maximum number of records to return",
         alias=settings.LIMIT_PARAM_NAME,
     )
-    offset: int | None = Field(  # type: ignore[literal-required]
+    offset: int | None = Field(
         default=settings.DEFAULT_OFFSET,
         ge=0,
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
     )
-    include_pagination: bool = Field(  # type: ignore[literal-required]
+    include_pagination: bool = Field(
         default=settings.DEFAULT_RETURN_PAGINATION,
         description="Include pagination metadata in response",
         alias=settings.PAGINATION_PARAM_NAME,
     )
-    group_by: GroupByParam | None = Field(  # type: ignore[literal-required]
+    group_by: GroupByParam | None = Field(
         default=None,
         description="Group results by field. Can be a string or dict with field, granularity, tz_offset/timezone",
         alias=settings.GROUP_BY_PARAM_NAME,
     )
-    join_type: JoinType | None = Field(  # type: ignore[literal-required]
+    join_type: JoinType | None = Field(
         default=None,
         description="Join type for relationship queries. Options: 'inner' (default), 'left', 'outer'",
         alias=settings.JOIN_TYPE_PARAM_NAME,
