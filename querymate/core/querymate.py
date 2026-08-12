@@ -2,7 +2,7 @@ import json
 import warnings
 from collections.abc import Callable, Collection
 from types import new_class
-from typing import Annotated, Any, Literal, TypeVar, cast
+from typing import Annotated, Any, Literal, TypeVar, cast, overload
 from urllib.parse import quote, unquote, urlencode
 
 from fastapi import Body, Query, Request
@@ -870,6 +870,27 @@ class Querymate(BaseModel):
         bound_scopes = self._execution_scopes(db, scopes, principal)
         return self._make_builder(model, bound_scopes).fetch(db)
 
+    @overload
+    def run(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> list[dict[str, Any]]: ...
+
+    @overload
+    def run(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        principal: Any,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> QuerymateResponse: ...
+
     def run(
         self,
         db: Session,
@@ -1121,6 +1142,27 @@ class Querymate(BaseModel):
                 total=total,
             ),
         )
+
+    @overload
+    async def run_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> list[dict[str, Any]]: ...
+
+    @overload
+    async def run_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+        principal: Any,
+        dialect: Literal["postgresql", "sqlite"] = "postgresql",
+    ) -> QuerymateResponse: ...
 
     async def run_async(
         self,

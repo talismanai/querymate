@@ -191,10 +191,9 @@ class QueryBuilder:
         inspection: Mapper = inspect(model)
         for field in fields:
             if not isinstance(field, dict):
-                if isinstance(field, str):
-                    target = self._computed_target(model, field)
-                    if target is not None:
-                        self._append_model(models, target)
+                target = self._computed_target(model, field)
+                if target is not None:
+                    self._append_model(models, target)
                 continue
             for relationship_name, relationship_fields in field.items():
                 # Normalization validated the name, so the lookup cannot miss.
@@ -1691,6 +1690,8 @@ class QueryBuilder:
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             keys_query = keys_query.where(root_scope)
+        for condition in self._required_conditions:
+            keys_query = keys_query.where(condition)
 
         # Order naturally (alphabetically for strings, chronologically for dates)
         keys_query = keys_query.order_by(group_expr)
@@ -1733,6 +1734,8 @@ class QueryBuilder:
         root_scope = self._scope_for(self.model)
         if root_scope is not None:
             keys_query = keys_query.where(root_scope)
+        for condition in self._required_conditions:
+            keys_query = keys_query.where(condition)
 
         keys_query = keys_query.order_by(group_expr)
 
@@ -1788,6 +1791,7 @@ class QueryBuilder:
             return self._resolve_column(field_path)
 
         join_conditions: list[Any] = []
+        has_related_scope = False
         current: ModelClass = self.model
         for hop in parts[:-1]:
             mapper: Mapper = inspect(current)
@@ -1807,6 +1811,18 @@ class QueryBuilder:
             related_scope = self._scope_for(current)
             if related_scope is not None:
                 join_conditions.append(related_scope)
+                has_related_scope = True
+
+        # A scoped to-one relationship that is not visible must remove the root row
+        # from the grouped input. Leaving it in would turn the hidden value into a
+        # ``null`` group and leak the number of rows attached to another tenant.
+        if has_related_scope:
+            self._required_conditions.append(
+                sa_select(1)
+                .where(and_(*join_conditions))
+                .correlate(self.model)
+                .exists()
+            )
 
         return (
             select(getattr(current, parts[-1]))

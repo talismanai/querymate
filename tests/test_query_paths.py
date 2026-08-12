@@ -238,6 +238,21 @@ def test_a_sort_dict_of_an_unexpected_shape_is_rejected(db: Session) -> None:
         Querymate(select=["id"], sort=[{"a": ["x"], "b": ["y"]}, "id"]).run(db, User)
 
 
+@pytest.mark.parametrize(
+    "entry, message",
+    [
+        ("", "cannot be empty"),
+        ("-", "cannot be empty"),
+        ({"": ["x"]}, "non-empty field name"),
+        ({"name": {"unknown": ["x"]}}, "exactly 'values' or 'order'"),
+        ({"name": []}, "cannot be empty"),
+    ],
+)
+def test_every_invalid_custom_sort_shape_is_rejected(entry: Any, message: str) -> None:
+    with pytest.raises(InvalidSortError, match=message):
+        Querymate(select=["id"], sort=[entry])._make_builder(User, None)
+
+
 # ---------------------------------------------------------------------------
 # Grouping paths
 # ---------------------------------------------------------------------------
