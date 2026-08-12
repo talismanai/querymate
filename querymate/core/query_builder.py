@@ -5,12 +5,19 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from sqlalchemy import and_, case, func
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapper, joinedload, load_only, selectinload
+from sqlalchemy.orm import Mapper, Session, joinedload, load_only, selectinload
 from sqlalchemy.orm.attributes import InstrumentedAttribute, set_committed_value
 from sqlalchemy.orm.relationships import RelationshipProperty
-from sqlmodel import Session, SQLModel, inspect, select
+from sqlmodel import inspect, select
 from sqlmodel.sql.expression import SelectOfScalar
 
+from querymate.core.compat import (
+    ModelClass,
+    exec_select,
+    has_field,
+    mapper_of,
+    scalar_fields,
+)
 from querymate.core.computed import (
     ComputedRegistry,
     computed_expression,
@@ -42,7 +49,10 @@ if TYPE_CHECKING:
     from querymate.core.grouping import GroupByConfig, GroupKeyExtractor
     from querymate.core.openapi import ResolvedExposure
 
-T = TypeVar("T", bound=SQLModel)
+# Unbound: the engine works with SQLModel table classes and plain SQLAlchemy
+# declarative models alike, and a bound of SQLModel would reject half of that in a
+# type checker while the runtime accepted it.
+T = TypeVar("T")
 
 # Type aliases for better readability
 JoinType = Literal["inner", "left", "outer"]
@@ -102,7 +112,7 @@ class QueryBuilder:
         ```
     """
 
-    model: type[SQLModel]
+    model: ModelClass
     query: SelectOfScalar
     select: list[NormalizedSelection]
     filter: dict[str, Any]
@@ -129,6 +139,9 @@ class QueryBuilder:
                 declared to ``Querymate.for_model``. Enforced here so the documented
                 surface and the queryable one cannot drift apart.
         """
+        # Checked here rather than left to fail later on a missing attribute: an
+        # unmapped class has no columns to query, and the error should say that.
+        mapper_of(model)
         self.model = model
         self.scopes = scopes
         self.exposure = exposure
@@ -151,8 +164,8 @@ class QueryBuilder:
         self._keyset: list[SortKey] = []
 
     def _models_in_select(
-        self, model: type[SQLModel], fields: Sequence[NormalizedSelection]
-    ) -> list[type[SQLModel]]:
+        self, model: ModelClass, fields: Sequence[NormalizedSelection]
+    ) -> list[ModelClass]:
         """List every model a normalized selection will load, root first.
 
         Scope resolvers may be async, but query building is synchronous, so callers
@@ -160,13 +173,13 @@ class QueryBuilder:
         then reads them from the bound registry's cache.
 
         Args:
-            model (type[SQLModel]): The model the selection is rooted at.
+            model (ModelClass): The model the selection is rooted at.
             fields (Sequence[FieldSelection]): Normalized field selections.
 
         Returns:
-            list[type[SQLModel]]: The models involved, without duplicates.
+            list[ModelClass]: The models involved, without duplicates.
         """
-        models: list[type[SQLModel]] = [model]
+        models: list[ModelClass] = [model]
         inspection: Mapper = inspect(model)
         for field in fields:
             if not isinstance(field, dict):
@@ -175,7 +188,7 @@ class QueryBuilder:
                 relationship_property = inspection.relationships.get(relationship_name)
                 if relationship_property is None:
                     continue
-                related_model: type[SQLModel] = relationship_property.mapper.class_
+                related_model: ModelClass = relationship_property.mapper.class_
                 for nested in self._models_in_select(
                     related_model, relationship_fields
                 ):
@@ -183,11 +196,9 @@ class QueryBuilder:
                         models.append(nested)
         return models
 
-    def _planned_models(
-        self, fields: list[FieldSelection] | None
-    ) -> list[type[SQLModel]]:
+    def _planned_models(self, fields: list[FieldSelection] | None) -> list[ModelClass]:
         """Resolve which models a ``select`` argument will end up loading."""
-        effective = fields if fields else list(self.model.model_fields.keys())
+        effective = fields if fields else scalar_fields(self.model)
         normalized = self._normalize_select_fields(self.model, effective)
         return self._models_in_select(self.model, normalized)
 
@@ -223,7 +234,7 @@ class QueryBuilder:
             await self.scopes.grants_for_async(model)
         return self
 
-    def _scope_for(self, model: type[SQLModel]) -> Any | None:
+    def _scope_for(self, model: ModelClass) -> Any | None:
         """Return the cached scope condition for ``model``, if scopes are bound."""
         if self.scopes is None:
             return None
@@ -264,7 +275,7 @@ class QueryBuilder:
 
     def _check_field(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         field: str,
         usage: str,
         exposure: "ResolvedExposure | None",
@@ -286,10 +297,10 @@ class QueryBuilder:
 
     def _check_relationship(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         name: str,
         exposure: "ResolvedExposure | None",
-    ) -> tuple[type[SQLModel], "ResolvedExposure | None"]:
+    ) -> tuple[ModelClass, "ResolvedExposure | None"]:
         """Validate a relationship hop, returning the target model and its exposure."""
         child_exposure = (
             exposure.check_relationship(name) if exposure is not None else None
@@ -316,7 +327,7 @@ class QueryBuilder:
 
     def _enforce_selection(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         fields: Sequence[NormalizedSelection],
         exposure: "ResolvedExposure | None",
     ) -> None:
@@ -333,7 +344,7 @@ class QueryBuilder:
 
     def _enforce_filter_access(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         filter_dict: dict[str, Any],
         exposure: "ResolvedExposure | None",
     ) -> None:
@@ -356,7 +367,7 @@ class QueryBuilder:
 
     def _enforce_path_access(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         field_path: str,
         usage: str,
         exposure: "ResolvedExposure | None",
@@ -373,7 +384,7 @@ class QueryBuilder:
 
     def _enforce_sort_access(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         field_path: str,
         exposure: "ResolvedExposure | None",
     ) -> None:
@@ -386,7 +397,7 @@ class QueryBuilder:
 
     def _normalize_select_fields(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         fields: Sequence[FieldSelection],
         path: tuple[str, ...] = (),
     ) -> list[NormalizedSelection]:
@@ -400,7 +411,7 @@ class QueryBuilder:
         keeps its simple ``{name: [fields]}`` shape for serialization.
 
         Args:
-            model (type[SQLModel]): Model whose fields are being selected.
+            model (ModelClass): Model whose fields are being selected.
             fields (list[FieldSelection]): Requested field selections.
             path (tuple[str, ...]): Relationship path walked so far.
 
@@ -413,7 +424,7 @@ class QueryBuilder:
         normalized_field_names: list[str] = []
         normalized_relationships: list[dict[str, list[Any]]] = []
 
-        valid_model_fields: list[str] = list(model.model_fields.keys())
+        valid_model_fields: list[str] = scalar_fields(model)
         available_computed = computed_names(model, self.computed)
         inspection: Mapper = inspect(model)
         valid_relationships = inspection.relationships
@@ -447,9 +458,7 @@ class QueryBuilder:
                             model.__name__,
                             set(valid_relationships.keys()),
                         )
-                    relationship_model: type[SQLModel] = (
-                        relationship_property.mapper.class_
-                    )
+                    relationship_model: ModelClass = relationship_property.mapper.class_
                     relationship_path = (*path, relationship_name)
 
                     relationship_fields: Sequence[FieldSelection]
@@ -480,7 +489,7 @@ class QueryBuilder:
         return normalized
 
     def _windowed_relationship(
-        self, model: type[SQLModel], name: str, path: tuple[str, ...]
+        self, model: ModelClass, name: str, path: tuple[str, ...]
     ) -> RelationshipProperty | None:
         """Return the relationship if it must be loaded with a window function.
 
@@ -515,9 +524,9 @@ class QueryBuilder:
             if plan is None:
                 continue
             paged_query, attach = plan
-            rows = db.exec(paged_query).all()
+            rows = exec_select(db, paged_query).all()
             children_query = self._window_children_query(path, [row[1] for row in rows])
-            children = db.exec(children_query).unique().all() if rows else []
+            children = exec_select(db, children_query).unique().all() if rows else []
             attach(rows, list(children))
 
     async def _load_windowed_relationships_async(
@@ -541,12 +550,12 @@ class QueryBuilder:
 
     def _window_relationship_parts(
         self, path: tuple[str, ...]
-    ) -> tuple[RelationshipProperty, type[SQLModel], Any, Any]:
+    ) -> tuple[RelationshipProperty, ModelClass, Any, Any]:
         """Resolve a windowed relationship into the pieces the queries need."""
         name = path[0]
         mapper: Mapper = inspect(self.model)
         relationship = mapper.relationships[name]
-        child_model: type[SQLModel] = relationship.mapper.class_
+        child_model: ModelClass = relationship.mapper.class_
         # For a collection the remote side of the pair is the foreign key on the child,
         # which is what partitions the window.
         pairs = relationship.local_remote_pairs or []
@@ -554,7 +563,7 @@ class QueryBuilder:
         # local_remote_pairs yields ORM-annotated columns, which make a select
         # entity-aware and cause SQLAlchemy to append the entity's columns to the
         # projection. The plain table columns keep the projection exactly as written.
-        table = child_model.__table__  # type: ignore[attr-defined]
+        table = child_model.__table__
         child_fk = table.c[annotated_fk.key]
         child_pk = table.primary_key.columns[0]
         return relationship, child_model, child_fk, child_pk
@@ -640,7 +649,7 @@ class QueryBuilder:
             .execution_options(populate_existing=True)
         )
 
-    def _child_order_by(self, child_model: type[SQLModel], sort: Any) -> list[Any]:
+    def _child_order_by(self, child_model: ModelClass, sort: Any) -> list[Any]:
         """Ordering used inside each parent's window, defaulting to the primary key."""
         expressions: list[Any] = []
         for entry in sort or []:
@@ -648,9 +657,9 @@ class QueryBuilder:
                 continue
             descending = entry.startswith("-")
             field = entry[1:] if entry[0] in "+-" else entry
-            if field not in child_model.model_fields:
+            if not has_field(child_model, field):
                 raise UnknownFieldError(
-                    field, child_model.__name__, list(child_model.model_fields)
+                    field, child_model.__name__, scalar_fields(child_model)
                 )
             column = getattr(child_model, field)
             expressions.append(column.desc() if descending else column)
@@ -661,7 +670,7 @@ class QueryBuilder:
 
     def _relationship_attribute(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         relationship: RelationshipProperty,
         path: tuple[str, ...] = (),
     ) -> Any:
@@ -691,7 +700,7 @@ class QueryBuilder:
 
     def _loader_options(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         fields: list[NormalizedSelection],
         path: tuple[str, ...] = (),
     ) -> list[Any]:
@@ -706,7 +715,7 @@ class QueryBuilder:
         being duplicated by a cartesian product, and makes arbitrary nesting work.
 
         Args:
-            model (type[SQLModel]): The model the selection is rooted at.
+            model (ModelClass): The model the selection is rooted at.
             fields (list[FieldSelection]): Normalized field selections.
 
         Returns:
@@ -729,20 +738,20 @@ class QueryBuilder:
             raise UnknownFieldError(
                 computed_requested[0],
                 model.__name__,
-                sorted(set(model.model_fields.keys())),
+                sorted(scalar_fields(model)),
             )
         if computed_requested:
             self._computed_selected = computed_requested
 
-        scalar_fields = [
+        columns_requested = [
             field
             for field in fields
             if isinstance(field, str) and field not in available_computed
         ]
-        if scalar_fields:
+        if columns_requested:
             # load_only always keeps primary keys, which selectinload needs anyway.
             options.append(
-                load_only(*[getattr(model, field) for field in scalar_fields])
+                load_only(*[getattr(model, field) for field in columns_requested])
             )
 
         inspection: Mapper = inspect(model)
@@ -788,7 +797,7 @@ class QueryBuilder:
 
     def _required_relationship_conditions(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         fields: list[NormalizedSelection],
         path: tuple[str, ...] = (),
     ) -> list[Any]:
@@ -877,9 +886,8 @@ class QueryBuilder:
             )
             ```
         """
-        if not fields:
-            fields = list(self.model.model_fields.keys())
-        normalized_fields = self._normalize_select_fields(self.model, fields)
+        requested: Sequence[FieldSelection] = fields or scalar_fields(self.model)
+        normalized_fields = self._normalize_select_fields(self.model, requested)
         self._enforce_selection_bounds(normalized_fields)
         if self._access_is_restricted():
             self._enforce_selection(self.model, normalized_fields, self.exposure)
@@ -972,7 +980,7 @@ class QueryBuilder:
             return getattr(self.model, parts[0])
 
         join_conditions: list[Any] = []
-        current: type[SQLModel] = self.model
+        current: ModelClass = self.model
         for hop in parts[:-1]:
             mapper: Mapper = inspect(current)
             relationship = mapper.relationships.get(hop)
@@ -1147,7 +1155,7 @@ class QueryBuilder:
         """Identify the query the current cursor keys belong to."""
         return fingerprint(self.model.__name__, self._keyset, self.filter)
 
-    def cursor_for(self, instance: SQLModel) -> str:
+    def cursor_for(self, instance: Any) -> str:
         """Encode the cursor that resumes immediately after ``instance``."""
         values = [getattr(instance, key.field) for key in self._keyset]
         return encode_cursor(values, self.keyset_fingerprint())
@@ -1263,7 +1271,7 @@ class QueryBuilder:
         )
 
     def _serialize_object(
-        self, obj: SQLModel, fields: list[NormalizedSelection] | list[str]
+        self, obj: Any, fields: list[NormalizedSelection] | list[str]
     ) -> dict[str, Any]:
         """Serialize an object with only the requested fields.
 
@@ -1335,7 +1343,7 @@ class QueryBuilder:
             serialized = query_builder.serialize(results)
             ```
         """
-        entities = self._entities(db.exec(self.query).unique().all())
+        entities = self._entities(exec_select(db, self.query).unique().all())
         if self._relationship_windows:
             self._load_windowed_relationships(db, entities)
         return entities
@@ -1371,7 +1379,7 @@ class QueryBuilder:
         Returns:
             list[Any]: Raw query results.
         """
-        return list(db.exec(self.query).unique().all())
+        return list(exec_select(db, self.query).unique().all())
 
     def count(self, db: Session) -> int:
         """Return the total number of root records matching current filters.
@@ -1413,7 +1421,7 @@ class QueryBuilder:
         # A COUNT always yields exactly one row, so one() cannot legitimately
         # fail. The fallback this replaced turned any real error - a bad filter, a
         # broken connection - into a silent zero.
-        return int(db.exec(count_query).one())
+        return int(exec_select(db, count_query).one())
 
     async def fetch_async(
         self, db: AsyncSession, model: type[T] | None = None
@@ -1567,7 +1575,7 @@ class QueryBuilder:
         # Order naturally (alphabetically for strings, chronologically for dates)
         keys_query = keys_query.order_by(group_expr)
 
-        results = db.exec(keys_query).all()
+        results = exec_select(db, keys_query).all()
         return [(row[0], row[1]) for row in results]
 
     async def get_distinct_group_keys_async(
@@ -1862,8 +1870,8 @@ class QueryBuilder:
         many groups exist.
         """
         rows = list(
-            db.exec(
-                self._grouped_page_query(group_config, extractor, limit, offset)
+            exec_select(
+                db, self._grouped_page_query(group_config, extractor, limit, offset)
             ).all()
         )
         if not rows:
@@ -1872,7 +1880,7 @@ class QueryBuilder:
         mapper: Mapper = inspect(self.model)
         pk_col = next(col for col in mapper.primary_key)
         entities = (
-            db.exec(self.query.where(pk_col.in_([row[0] for row in rows])))
+            exec_select(db, self.query.where(pk_col.in_([row[0] for row in rows])))
             .unique()
             .all()
         )

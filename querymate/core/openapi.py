@@ -18,14 +18,14 @@ sensitive fields.
 
 from datetime import date, datetime
 from decimal import Decimal
-from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Mapper
-from sqlmodel import SQLModel, inspect
+from sqlmodel import inspect
 
 from querymate.core.aggregate import functions_for
+from querymate.core.compat import ModelClass, python_type_of, scalar_fields
 from querymate.core.computed import (
     ComputedRegistry,
     computed_names,
@@ -100,38 +100,8 @@ def operators_for(python_type: type | None) -> list[str]:
     return [name for name in names if name in available]
 
 
-def python_type_of(model: type[SQLModel], field: str) -> type | None:
-    """Return the Python type behind a model field, or None if undeterminable.
-
-    Tries the SQL column type first, then falls back to the Pydantic annotation.
-    The fallback is not optional: SQLModel maps ``str`` to its own ``AutoString``,
-    whose ``python_type`` raises, so without it no string field would be recognised
-    and every one of them would be documented with numeric operators.
-    """
-    attribute = getattr(model, field, None)
-    if attribute is not None:
-        prop = getattr(attribute, "property", None)
-        columns = getattr(prop, "columns", None) if prop is not None else None
-        column_type = columns[0].type if columns else getattr(attribute, "type", None)
-        if column_type is not None:
-            try:
-                return column_type.python_type  # type: ignore[no-any-return]
-            except NotImplementedError:
-                pass
-
-    field_info = model.model_fields.get(field)
-    if field_info is None:
-        return None
-    annotation = field_info.annotation
-    if get_origin(annotation) is UnionType or get_origin(annotation) is Union:
-        # Optional[X] -> X; the operators available do not depend on nullability.
-        candidates = [arg for arg in get_args(annotation) if arg is not type(None)]
-        annotation = candidates[0] if candidates else None
-    return annotation if isinstance(annotation, type) else None
-
-
 def field_python_type(
-    model: type[SQLModel], field: str, computed: ComputedRegistry | None = None
+    model: ModelClass, field: str, computed: ComputedRegistry | None = None
 ) -> type | None:
     """Type of a field, whether it is stored on the model or computed."""
     if field in computed_names(model, computed):
@@ -196,14 +166,14 @@ class ResourceRegistry:
     """
 
     def __init__(self) -> None:
-        self._exposures: dict[type[SQLModel], Exposed] = {}
+        self._exposures: dict[ModelClass, Exposed] = {}
 
-    def register(self, model: type[SQLModel], exposed: Exposed) -> "ResourceRegistry":
+    def register(self, model: ModelClass, exposed: Exposed) -> "ResourceRegistry":
         """Declare the exposure that governs ``model`` everywhere it appears."""
         self._exposures[model] = exposed
         return self
 
-    def get(self, model: type[SQLModel]) -> Exposed | None:
+    def get(self, model: ModelClass) -> Exposed | None:
         """Return the registered exposure for ``model``, if any."""
         return self._exposures.get(model)
 
@@ -233,7 +203,7 @@ class ResolvedExposure:
 
     def __init__(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         exposed: Exposed | None,
         depth: int,
         max_depth: int,
@@ -248,12 +218,13 @@ class ResolvedExposure:
 
         registered = registry.get(model) if registry is not None else None
 
-        all_fields = list(model.model_fields.keys())
+        all_fields = scalar_fields(model)
         mapper: Mapper = inspect(model)
         all_relationships = set(mapper.relationships.keys())
-        # Relationship attributes are not columns; without this they would show up as
-        # selectable scalar fields.
-        selectable = [f for f in all_fields if f not in all_relationships]
+        # scalar_fields already leaves relationships out - they are not columns, and
+        # offering one among the scalar fields would let a selection ask for it as if
+        # it were a value.
+        selectable = list(all_fields)
         # Computed fields are selectable, filterable and sortable like any other, and
         # must be offered here or the surface check would reject them.
         self.computed_fields = computed_names(model, computed)
@@ -340,7 +311,7 @@ class ResolvedExposure:
 
 
 def resolve_exposure(
-    model: type[SQLModel],
+    model: ModelClass,
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
@@ -367,7 +338,7 @@ _REPEATS = (
 
 
 def _field_schema(
-    exposure: ResolvedExposure, seen: frozenset[type[SQLModel]] = frozenset()
+    exposure: ResolvedExposure, seen: frozenset[ModelClass] = frozenset()
 ) -> dict[str, Any]:
     """Describe the selectable fields and relationships at one level.
 
@@ -518,7 +489,7 @@ def _aggregate_schema(exposure: ResolvedExposure) -> dict[str, Any]:
 
 
 def build_query_schema(
-    model: type[SQLModel],
+    model: ModelClass,
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
@@ -640,7 +611,7 @@ def build_query_schema(
 
 
 def build_query_examples(
-    model: type[SQLModel],
+    model: ModelClass,
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
@@ -734,7 +705,7 @@ def build_query_examples(
 
 
 def describe_query(
-    model: type[SQLModel],
+    model: ModelClass,
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,

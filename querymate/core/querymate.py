@@ -15,9 +15,10 @@ from pydantic import (
     ValidationError,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import Session, SQLModel
+from sqlalchemy.orm import Session
 
 from querymate.core.aggregate import parse_aggregations
+from querymate.core.compat import ModelClass
 from querymate.core.computed import ComputedRegistry
 from querymate.core.config import settings
 from querymate.core.exceptions import InvalidQueryError
@@ -47,12 +48,15 @@ from querymate.types import (
     PaginationInfo,
 )
 
-T = TypeVar("T", bound=SQLModel)
+# Unbound: the engine works with SQLModel table classes and plain SQLAlchemy
+# declarative models alike, and a bound of SQLModel would reject half of that in a
+# type checker while the runtime accepted it.
+T = TypeVar("T")
 R = TypeVar("R")
 
 
 def _query_body_model(
-    model: type[SQLModel], schema: dict[str, Any]
+    model: ModelClass, schema: dict[str, Any]
 ) -> type[RootModel[dict[str, Any]]]:
     """Wrap the query grammar in a body model carrying its generated schema.
 
@@ -247,7 +251,7 @@ class Querymate(BaseModel):
     )
 
     # Set by for_model(): the model this query targets and the surface it may use.
-    _bound_model: type[SQLModel] | None = PrivateAttr(default=None)
+    _bound_model: ModelClass | None = PrivateAttr(default=None)
     _exposure: ResolvedExposure | None = PrivateAttr(default=None)
     _computed: ComputedRegistry | None = PrivateAttr(default=None)
 
@@ -642,7 +646,7 @@ class Querymate(BaseModel):
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
             scopes (BoundScopes | None): Authorization scopes bound to the current
                 principal, as returned by ``ScopeRegistry.bind(...)``.
 
@@ -666,7 +670,7 @@ class Querymate(BaseModel):
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
@@ -705,7 +709,7 @@ class Querymate(BaseModel):
 
         Args:
             db (Session): The SQLModel database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
@@ -851,7 +855,7 @@ class Querymate(BaseModel):
 
         Args:
             db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[dict[str, Any]]: A list of serialized model instances matching the query parameters.
@@ -885,7 +889,7 @@ class Querymate(BaseModel):
 
         Args:
             db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             PaginatedResponse[dict[str, Any]]: Serialized results with pagination metadata.
@@ -914,7 +918,7 @@ class Querymate(BaseModel):
 
         Args:
             db (AsyncSession): The SQLModel async database session.
-            model (type[SQLModel]): The SQLModel model class to query.
+            model (ModelClass): The SQLModel model class to query.
 
         Returns:
             list[SQLModel]: A list of model instances matching the query parameters.

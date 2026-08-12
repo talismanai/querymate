@@ -23,9 +23,10 @@ another language that emits the same document gets the same generated clients.
 from typing import Any
 
 from sqlalchemy.orm import Mapper
-from sqlmodel import SQLModel, inspect
+from sqlmodel import inspect
 
 from querymate.core.aggregate import AGGREGATE_FUNCTIONS, functions_for
+from querymate.core.compat import ModelClass, is_nullable
 from querymate.core.config import settings
 from querymate.core.openapi import (
     ResolvedExposure,
@@ -88,19 +89,6 @@ def operator_catalogue() -> dict[str, dict[str, str]]:
         operator: {"value": operator_value_kind(operator)}
         for operator in sorted(settings.FILTER_OPERATORS)
     }
-
-
-def is_nullable(model: type[SQLModel], field: str) -> bool:
-    """Whether a field may be null, so a client can type it as optional."""
-    field_info = model.model_fields.get(field)
-    if field_info is None:
-        return True
-    attribute = getattr(model, field, None)
-    prop = getattr(attribute, "property", None) if attribute is not None else None
-    columns = getattr(prop, "columns", None) if prop is not None else None
-    if columns:
-        return bool(columns[0].nullable)
-    return not field_info.is_required()
 
 
 def _surface_fingerprint(exposure: ResolvedExposure) -> tuple[Any, ...]:
@@ -312,7 +300,7 @@ def _format_of(python_type: type | None) -> str | None:
 
 
 def describe_resource(
-    model: type[SQLModel],
+    model: ModelClass,
     exposed: Any = None,
     max_depth: int | None = None,
     registry: Any = None,

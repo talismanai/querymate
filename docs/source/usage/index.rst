@@ -6,6 +6,7 @@ This guide covers the main features and usage patterns of QueryMate.
 .. toctree::
    :maxdepth: 2
 
+   models
    filtering
    sorting
    pagination

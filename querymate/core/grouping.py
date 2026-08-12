@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, text
 from sqlalchemy.orm.attributes import InstrumentedAttribute
-from sqlmodel import SQLModel
 
+from querymate.core.compat import ModelClass
 from querymate.core.config import settings
 from querymate.types import PaginationInfo
 
@@ -300,7 +300,7 @@ class GroupKeyExtractor:
 class DefaultFieldResolver:
     """Resolves field paths to SQLAlchemy column objects."""
 
-    def resolve(self, model: type[SQLModel], field_path: str) -> InstrumentedAttribute:
+    def resolve(self, model: ModelClass, field_path: str) -> InstrumentedAttribute:
         """Resolve a field path to a SQLAlchemy column.
 
         Args:

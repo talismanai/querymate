@@ -21,10 +21,12 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Mapper
-from sqlmodel import SQLModel, inspect
+from sqlmodel import inspect
+
+from querymate.core.compat import ModelClass
 
 # A custom computed field is a callable returning a SQL expression for the model.
-ComputedExpression = Callable[[type[SQLModel]], Any]
+ComputedExpression = Callable[[ModelClass], Any]
 
 # Suffix that turns a relationship name into its count field.
 COUNT_SUFFIX = "_count"
@@ -43,13 +45,11 @@ class ComputedRegistry:
     """
 
     def __init__(self) -> None:
-        self._fields: dict[
-            type[SQLModel], dict[str, tuple[ComputedExpression, type]]
-        ] = {}
+        self._fields: dict[ModelClass, dict[str, tuple[ComputedExpression, type]]] = {}
 
     def register(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         name: str,
         expression: ComputedExpression,
         type: type = int,
@@ -66,18 +66,18 @@ class ComputedRegistry:
         self._fields.setdefault(model, {})[name] = (expression, type)
         return self
 
-    def names(self, model: type[SQLModel]) -> list[str]:
+    def names(self, model: ModelClass) -> list[str]:
         """Custom computed field names declared for ``model``."""
         return sorted(self._fields.get(model, {}))
 
     def get(
-        self, model: type[SQLModel], name: str
+        self, model: ModelClass, name: str
     ) -> tuple[ComputedExpression, type] | None:
         """Return the expression and type for a custom field, if declared."""
         return self._fields.get(model, {}).get(name)
 
 
-def relationship_count_fields(model: type[SQLModel]) -> list[str]:
+def relationship_count_fields(model: ModelClass) -> list[str]:
     """Return the ``<relationship>_count`` field available for each collection.
 
     Only collections get one: counting a to-one relationship is always zero or one,
@@ -91,7 +91,7 @@ def relationship_count_fields(model: type[SQLModel]) -> list[str]:
     )
 
 
-def _count_expression(model: type[SQLModel], relationship_name: str) -> Any:
+def _count_expression(model: ModelClass, relationship_name: str) -> Any:
     """Build the correlated subquery counting a relationship's rows.
 
     A correlated subquery rather than a join or an eager load: it adds one column to
@@ -118,7 +118,7 @@ def _count_expression(model: type[SQLModel], relationship_name: str) -> Any:
 
 
 def computed_names(
-    model: type[SQLModel], registry: ComputedRegistry | None = None
+    model: ModelClass, registry: ComputedRegistry | None = None
 ) -> list[str]:
     """All computed field names available on a model."""
     names = relationship_count_fields(model)
@@ -128,14 +128,14 @@ def computed_names(
 
 
 def is_computed(
-    model: type[SQLModel], name: str, registry: ComputedRegistry | None = None
+    model: ModelClass, name: str, registry: ComputedRegistry | None = None
 ) -> bool:
     """Whether ``name`` is a computed field of ``model``."""
     return name in computed_names(model, registry)
 
 
 def computed_expression(
-    model: type[SQLModel], name: str, registry: ComputedRegistry | None = None
+    model: ModelClass, name: str, registry: ComputedRegistry | None = None
 ) -> Any:
     """Return the SQL expression for a computed field.
 
@@ -159,7 +159,7 @@ def computed_expression(
 
 
 def computed_type(
-    model: type[SQLModel], name: str, registry: ComputedRegistry | None = None
+    model: ModelClass, name: str, registry: ComputedRegistry | None = None
 ) -> type:
     """Return the Python type of a computed field, for documentation and operators."""
     if registry is not None:

@@ -6,8 +6,9 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.type_api import TypeEngine
-from sqlmodel import SQLModel, inspect
+from sqlmodel import inspect
 
+from querymate.core.compat import ModelClass
 from querymate.core.computed import (
     ComputedRegistry,
     computed_expression,
@@ -533,11 +534,11 @@ class DefaultFieldResolver:
         ```
     """
 
-    def resolve(self, model: type[SQLModel], field_path: str) -> InstrumentedAttribute:
+    def resolve(self, model: ModelClass, field_path: str) -> InstrumentedAttribute:
         """Resolve a field path to a SQLAlchemy column.
 
         Args:
-            model (type[SQLModel]): The SQLModel class to start resolution from.
+            model (ModelClass): The SQLModel class to start resolution from.
             field_path (str): The dot-separated path to the field.
 
         Returns:
@@ -587,14 +588,14 @@ class FilterBuilder:
 
     def __init__(
         self,
-        model: type[SQLModel],
+        model: ModelClass,
         resolver: DefaultFieldResolver | None = None,
         computed: ComputedRegistry | None = None,
     ) -> None:
         """Initialize the filter builder.
 
         Args:
-            model (type[SQLModel]): The SQLModel class to build filters for.
+            model (ModelClass): The SQLModel class to build filters for.
             resolver (DefaultFieldResolver | None): Optional field resolver. Defaults to DefaultFieldResolver.
             computed (ComputedRegistry | None): Custom computed fields, so a filter can
                 name one alongside stored columns.
@@ -603,7 +604,7 @@ class FilterBuilder:
         self.resolver = resolver or DefaultFieldResolver()
         self.computed = computed
 
-    def _resolve(self, model: type[SQLModel], field: str) -> Any:
+    def _resolve(self, model: ModelClass, field: str) -> Any:
         """Resolve a leaf field to a column or a computed expression."""
         if field in computed_names(model, self.computed):
             return computed_expression(model, field, self.computed)
@@ -753,7 +754,7 @@ class FilterBuilder:
             return expressions[0]
         return and_(*expressions)
 
-    def _parse(self, model: type[SQLModel], filters_dict: dict) -> list[Any]:
+    def _parse(self, model: ModelClass, filters_dict: dict) -> list[Any]:
         """Parse a filter dictionary into SQLAlchemy expressions.
 
         Conditions on related fields become correlated EXISTS subqueries rather than
@@ -765,7 +766,7 @@ class FilterBuilder:
         both rather than two posts each satisfying one.
 
         Args:
-            model (type[SQLModel]): The SQLModel class to parse filters for.
+            model (ModelClass): The SQLModel class to parse filters for.
             filters_dict (dict): The filter dictionary to parse.
 
         Returns:
@@ -806,7 +807,7 @@ class FilterBuilder:
                     model.__name__,
                     set(mapper.relationships.keys()),
                 )
-            related_model: type[SQLModel] = relationship.mapper.class_
+            related_model: ModelClass = relationship.mapper.class_
             inner_conditions = self._parse(related_model, sub_filters)
             inner = (
                 inner_conditions[0]

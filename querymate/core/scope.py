@@ -45,11 +45,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar, cast
 
 from sqlalchemy.sql.elements import ColumnElement
-from sqlmodel import SQLModel
 
+from querymate.core.compat import ModelClass
 from querymate.core.exceptions import QuerymateError
 
-T = TypeVar("T", bound=SQLModel)
+# Unbound: the engine works with SQLModel table classes and plain SQLAlchemy
+# declarative models alike, and a bound of SQLModel would reject half of that in a
+# type checker while the runtime accepted it.
+T = TypeVar("T")
 
 # A resolver returns a SQLAlchemy boolean condition, or None for "no restriction".
 ScopeCondition = ColumnElement[bool] | None
@@ -72,7 +75,7 @@ class UnscopedModelError(QuerymateError):
 
     status_code = 500
 
-    def __init__(self, model: type[SQLModel]) -> None:
+    def __init__(self, model: ModelClass) -> None:
         self.model = model
         super().__init__(
             f"No authorization scope registered for model '{model.__name__}'. "
@@ -184,10 +187,10 @@ class BoundScopes:
 
     def __init__(
         self,
-        resolvers: dict[type[SQLModel], ScopeResolver | str],
+        resolvers: dict[ModelClass, ScopeResolver | str],
         context: ScopeContext,
         strict: bool,
-        grant_resolvers: dict[type[SQLModel], GrantsResolver] | None = None,
+        grant_resolvers: dict[ModelClass, GrantsResolver] | None = None,
         identity: str | None = None,
     ) -> None:
         self._resolvers = resolvers
@@ -196,11 +199,11 @@ class BoundScopes:
         # What the cached rows of this request belong to. It lives here because it is
         # a property of who is asking, which is exactly what binding establishes.
         self.identity = identity
-        self._resolved: dict[type[SQLModel], ScopeCondition] = {}
+        self._resolved: dict[ModelClass, ScopeCondition] = {}
         self._grant_resolvers = grant_resolvers or {}
-        self._resolved_grants: dict[type[SQLModel], FieldGrants | None] = {}
+        self._resolved_grants: dict[ModelClass, FieldGrants | None] = {}
 
-    def grants_for(self, model: type[SQLModel]) -> FieldGrants | None:
+    def grants_for(self, model: ModelClass) -> FieldGrants | None:
         """Return this principal's field grants for ``model``, or None if unrestricted.
 
         Resolved once per model per request, like a scope.
@@ -225,7 +228,7 @@ class BoundScopes:
         self._resolved_grants[model] = grants
         return grants
 
-    async def grants_for_async(self, model: type[SQLModel]) -> FieldGrants | None:
+    async def grants_for_async(self, model: ModelClass) -> FieldGrants | None:
         """Async counterpart of :meth:`grants_for`; accepts sync or async resolvers."""
         if model in self._resolved_grants:
             return self._resolved_grants[model]
@@ -246,7 +249,7 @@ class BoundScopes:
         """The :class:`ScopeContext` handed to resolvers."""
         return self._context
 
-    def _lookup(self, model: type[SQLModel]) -> ScopeResolver | str | None:
+    def _lookup(self, model: ModelClass) -> ScopeResolver | str | None:
         """Find the resolver for ``model``, honouring inheritance, or enforce strictness."""
         resolver = self._resolvers.get(model)
         if resolver is None:
@@ -260,7 +263,7 @@ class BoundScopes:
             raise UnscopedModelError(model)
         return resolver
 
-    def condition_for(self, model: type[SQLModel]) -> ScopeCondition:
+    def condition_for(self, model: ModelClass) -> ScopeCondition:
         """Return the access condition for ``model``, or ``None`` if unrestricted.
 
         Raises:
@@ -289,7 +292,7 @@ class BoundScopes:
         self._resolved[model] = resolved
         return resolved
 
-    async def condition_for_async(self, model: type[SQLModel]) -> ScopeCondition:
+    async def condition_for_async(self, model: ModelClass) -> ScopeCondition:
         """Async counterpart of :meth:`condition_for`; accepts sync or async resolvers."""
         if model in self._resolved:
             return self._resolved[model]
@@ -340,8 +343,8 @@ class ScopeRegistry:
     """
 
     def __init__(self) -> None:
-        self._resolvers: dict[type[SQLModel], ScopeResolver | str] = {}
-        self._grant_resolvers: dict[type[SQLModel], GrantsResolver] = {}
+        self._resolvers: dict[ModelClass, ScopeResolver | str] = {}
+        self._grant_resolvers: dict[ModelClass, GrantsResolver] = {}
 
     def register(self, model: type[T]) -> Callable[[ScopeResolver], ScopeResolver]:
         """Register the scope resolver for ``model``. Usable as a decorator.
@@ -405,7 +408,7 @@ class ScopeRegistry:
         self._resolvers[model] = _ALLOW_ALL
         return self
 
-    def registered_models(self) -> set[type[SQLModel]]:
+    def registered_models(self) -> set[ModelClass]:
         """Return the models that currently have a resolver."""
         return set(self._resolvers.keys())
 

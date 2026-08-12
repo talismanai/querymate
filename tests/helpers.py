@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import event
-from sqlmodel import Session
+from sqlalchemy.orm import Session
 
 
 @contextmanager
