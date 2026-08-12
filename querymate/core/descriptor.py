@@ -28,9 +28,9 @@ from sqlmodel import SQLModel, inspect
 from querymate.core.config import settings
 from querymate.core.openapi import (
     ResolvedExposure,
+    field_python_type,
     json_type_of,
     operators_for,
-    python_type_of,
 )
 
 # The document format's own version, independent of the library's. Clients read this
@@ -146,11 +146,16 @@ class DescriptorBuilder:
 
         fields: dict[str, Any] = {}
         for field in sorted(exposure.fields):
-            python_type = python_type_of(exposure.model, field)
+            python_type = field_python_type(exposure.model, field, exposure.computed)
             fields[field] = {
                 "type": json_type_of(python_type),
                 "format": _format_of(python_type),
-                "nullable": is_nullable(exposure.model, field),
+                "nullable": (
+                    False
+                    if field in exposure.computed_fields
+                    else is_nullable(exposure.model, field)
+                ),
+                "computed": field in exposure.computed_fields,
                 "filterable": field in exposure.filterable,
                 "sortable": field in exposure.sortable,
                 "operators": (

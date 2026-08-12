@@ -10,6 +10,11 @@ from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlmodel import Session, SQLModel, inspect, select
 from sqlmodel.sql.expression import SelectOfScalar
 
+from querymate.core.computed import (
+    ComputedRegistry,
+    computed_expression,
+    computed_names,
+)
 from querymate.core.config import settings
 from querymate.core.exceptions import (
     DepthExceededError,
@@ -98,6 +103,7 @@ class QueryBuilder:
         model: type[T],
         scopes: BoundScopes | None = None,
         exposure: "ResolvedExposure | None" = None,
+        computed: ComputedRegistry | None = None,
     ) -> None:
         """Initialize the QueryBuilder.
 
@@ -114,6 +120,7 @@ class QueryBuilder:
         self.model = model
         self.scopes = scopes
         self.exposure = exposure
+        self.computed = computed
         self.query = select(model)
         self.select = []
         self.filter = {}
@@ -123,6 +130,8 @@ class QueryBuilder:
         self._required_conditions: list[Any] = []
         # Per-relationship "which children to load" filters, keyed by path.
         self._relationship_filters: dict[tuple[str, ...], dict[str, Any]] = {}
+        # Computed fields requested at the root, selected as extra columns.
+        self._computed_selected: list[str] = []
 
     def _models_in_select(
         self, model: type[SQLModel], fields: Sequence[NormalizedSelection]
@@ -378,17 +387,25 @@ class QueryBuilder:
         normalized_relationships: list[dict[str, list[Any]]] = []
 
         valid_model_fields: list[str] = list(model.model_fields.keys())
+        available_computed = computed_names(model, self.computed)
         inspection: Mapper = inspect(model)
         valid_relationships = inspection.relationships
 
         for field in fields:
             if isinstance(field, str):
                 if field == "*":
+                    # "*" means the stored columns. Computed fields cost extra work,
+                    # so they are opt-in by name rather than swept in by a wildcard.
                     normalized_field_names = sorted(valid_model_fields)
                 else:
-                    if field not in valid_model_fields:
+                    if (
+                        field not in valid_model_fields
+                        and field not in available_computed
+                    ):
                         raise UnknownFieldError(
-                            field, model.__name__, valid_model_fields
+                            field,
+                            model.__name__,
+                            valid_model_fields + available_computed,
                         )
                     if field not in normalized_field_names:
                         normalized_field_names.append(field)
@@ -484,8 +501,30 @@ class QueryBuilder:
         options: list[Any] = []
 
         # Field names were validated during normalization, which is the single place
-        # that decides whether a selection is acceptable.
-        scalar_fields = [field for field in fields if isinstance(field, str)]
+        # that decides whether a selection is acceptable. Computed fields are not
+        # columns, so they are not part of load_only.
+        available_computed = set(computed_names(model, self.computed))
+        computed_requested = [
+            field
+            for field in fields
+            if isinstance(field, str) and field in available_computed
+        ]
+        if computed_requested and path:
+            # A nested computed field would have to be added to the selectin query
+            # that loads the children, which loader options cannot reach.
+            raise UnknownFieldError(
+                computed_requested[0],
+                model.__name__,
+                sorted(set(model.model_fields.keys())),
+            )
+        if computed_requested:
+            self._computed_selected = computed_requested
+
+        scalar_fields = [
+            field
+            for field in fields
+            if isinstance(field, str) and field not in available_computed
+        ]
         if scalar_fields:
             # load_only always keeps primary keys, which selectinload needs anyway.
             options.append(
@@ -627,9 +666,15 @@ class QueryBuilder:
             self._enforce_selection(self.model, normalized_fields, self.exposure)
         self.select = normalized_fields
 
+        loader_options = self._loader_options(self.model, normalized_fields)
+        # Computed fields ride along as extra columns on the root query: one scalar
+        # subquery each, no extra round trip and no effect on the row count.
+        computed_columns = [
+            computed_expression(self.model, name, self.computed).label(name)
+            for name in self._computed_selected
+        ]
         self.query = (
-            select(self.model)
-            .options(*self._loader_options(self.model, normalized_fields))
+            select(self.model, *computed_columns).options(*loader_options)
             # Without this, an entity already in the session's identity map keeps the
             # relationship contents it was first loaded with. Two queries differing
             # only in their scope would then serve the first principal's children for
@@ -673,7 +718,7 @@ class QueryBuilder:
         if self._access_is_restricted():
             self._enforce_filter_access(self.model, filter_dict, self.exposure)
         self.filter = filter_dict
-        filter_builder = FilterBuilder(self.model)
+        filter_builder = FilterBuilder(self.model, computed=self.computed)
         filters = filter_builder.build(filter_dict)
         if filters:
             self.query = self.query.where(*filters)
@@ -703,6 +748,8 @@ class QueryBuilder:
 
         parts = field_path.split(".")
         if len(parts) == 1:
+            if parts[0] in computed_names(self.model, self.computed):
+                return computed_expression(self.model, parts[0], self.computed)
             return getattr(self.model, parts[0])
 
         join_conditions: list[Any] = []
@@ -982,7 +1029,25 @@ class QueryBuilder:
             serialized = query_builder.serialize(results)
             ```
         """
-        return list(db.exec(self.query).unique().all())
+        return self._entities(db.exec(self.query).unique().all())
+
+    def _entities(self, rows: Sequence[Any]) -> list[Any]:
+        """Turn result rows into entities, attaching any computed columns.
+
+        With computed fields the query selects the entity plus one scalar column each,
+        so each row is a tuple. The values are set on the instance so serialization -
+        which reads attributes - needs to know nothing about them.
+        """
+        if not self._computed_selected:
+            return list(rows)
+
+        entities = []
+        for row in rows:
+            entity = row[0]
+            for index, name in enumerate(self._computed_selected, start=1):
+                object.__setattr__(entity, name, row[index])
+            entities.append(entity)
+        return entities
 
     def exec(self, db: Session) -> list[Any]:
         """Execute the query and return its raw results.
@@ -1019,7 +1084,9 @@ class QueryBuilder:
 
         # Rebuild filters without mutating the main query
         if self.filter:
-            filters = FilterBuilder(self.model).build(self.filter)
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
             if filters:
                 count_query = count_query.where(*filters)
 
@@ -1065,6 +1132,8 @@ class QueryBuilder:
             ```
         """
         results = await db.execute(self.query)
+        if self._computed_selected:
+            return self._entities(results.unique().all())
         return list(results.unique().scalars().all())
 
     async def exec_async(self, db: AsyncSession) -> list[Any]:
@@ -1098,7 +1167,9 @@ class QueryBuilder:
         count_query = select(func.count(func.distinct(pk_col)))
 
         if self.filter:
-            filters = FilterBuilder(self.model).build(self.filter)
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
             if filters:
                 count_query = count_query.where(*filters)
 
@@ -1170,7 +1241,9 @@ class QueryBuilder:
 
         # Apply existing filters
         if self.filter:
-            filters = FilterBuilder(self.model).build(self.filter)
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
             if filters:
                 keys_query = keys_query.where(*filters)
 
@@ -1212,7 +1285,9 @@ class QueryBuilder:
         ).group_by(group_expr)
 
         if self.filter:
-            filters = FilterBuilder(self.model).build(self.filter)
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
             if filters:
                 keys_query = keys_query.where(*filters)
 
@@ -1273,7 +1348,9 @@ class QueryBuilder:
             pk_col.label("_pk"), group_expr.label("_group_key"), row_number
         )
         if self.filter:
-            filters = FilterBuilder(self.model).build(self.filter)
+            filters = FilterBuilder(self.model, computed=self.computed).build(
+                self.filter
+            )
             if filters:
                 numbered = numbered.where(*filters)
         root_scope = self._scope_for(self.model)

@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Mapper
 from sqlmodel import SQLModel, inspect
 
+from querymate.core.computed import (
+    ComputedRegistry,
+    computed_names,
+    computed_type,
+)
 from querymate.core.config import settings
 from querymate.core.exceptions import (
     UnknownFieldError,
@@ -122,6 +127,15 @@ def python_type_of(model: type[SQLModel], field: str) -> type | None:
         candidates = [arg for arg in get_args(annotation) if arg is not type(None)]
         annotation = candidates[0] if candidates else None
     return annotation if isinstance(annotation, type) else None
+
+
+def field_python_type(
+    model: type[SQLModel], field: str, computed: ComputedRegistry | None = None
+) -> type | None:
+    """Type of a field, whether it is stored on the model or computed."""
+    if field in computed_names(model, computed):
+        return computed_type(model, field, computed)
+    return python_type_of(model, field)
 
 
 _JSON_TYPES: dict[Any, str] = {
@@ -223,11 +237,13 @@ class ResolvedExposure:
         depth: int,
         max_depth: int,
         registry: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
     ) -> None:
         self.model = model
         self.depth = depth
         self.max_depth = max_depth
         self.registry = registry
+        self.computed = computed
 
         registered = registry.get(model) if registry is not None else None
 
@@ -237,6 +253,10 @@ class ResolvedExposure:
         # Relationship attributes are not columns; without this they would show up as
         # selectable scalar fields.
         selectable = [f for f in all_fields if f not in all_relationships]
+        # Computed fields are selectable, filterable and sortable like any other, and
+        # must be offered here or the surface check would reject them.
+        self.computed_fields = computed_names(model, computed)
+        selectable = selectable + self.computed_fields
 
         self.fields: list[str] = _narrow(
             selectable,
@@ -285,6 +305,7 @@ class ResolvedExposure:
             self.depth + 1,
             self.max_depth,
             self.registry,
+            self.computed,
         )
 
     def check_field(self, field: str, *, usage: str = "selected") -> None:
@@ -322,6 +343,7 @@ def resolve_exposure(
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
+    computed: ComputedRegistry | None = None,
 ) -> ResolvedExposure:
     """Resolve an exposure declaration against a model."""
     return ResolvedExposure(
@@ -330,6 +352,7 @@ def resolve_exposure(
         depth=0,
         max_depth=max_depth if max_depth is not None else settings.MAX_SELECT_DEPTH,
         registry=registry,
+        computed=computed,
     )
 
 
@@ -380,7 +403,7 @@ def _filter_schema(exposure: ResolvedExposure) -> dict[str, Any]:
     properties: dict[str, Any] = {}
 
     for field in sorted(exposure.filterable):
-        python_type = python_type_of(exposure.model, field)
+        python_type = field_python_type(exposure.model, field, exposure.computed)
         json_type = json_type_of(python_type)
         operators = operators_for(python_type)
         properties[field] = {
@@ -437,6 +460,7 @@ def build_query_schema(
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
+    computed: ComputedRegistry | None = None,
 ) -> dict[str, Any]:
     """Build the JSON Schema of the ``q`` parameter for one model.
 
@@ -448,7 +472,7 @@ def build_query_schema(
     Returns:
         dict[str, Any]: A JSON Schema describing the decoded ``q`` object.
     """
-    exposure = resolve_exposure(model, exposed, max_depth, registry)
+    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
     sortable = sorted(exposure.sortable)
     sort_values = [*sortable, *[f"-{field}" for field in sortable]]
 
@@ -525,6 +549,7 @@ def build_query_examples(
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
+    computed: ComputedRegistry | None = None,
 ) -> dict[str, Any]:
     """Build OpenAPI examples using real field names from the model.
 
@@ -533,7 +558,7 @@ def build_query_examples(
     """
     import json
 
-    exposure = resolve_exposure(model, exposed, max_depth, registry)
+    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
     fields = exposure.fields[:2] or ["id"]
 
     def _interesting(candidates: list[str], fallback: str) -> str:
@@ -618,9 +643,10 @@ def describe_query(
     exposed: Exposed | None = None,
     max_depth: int | None = None,
     registry: ResourceRegistry | None = None,
+    computed: ComputedRegistry | None = None,
 ) -> str:
     """Build the human-readable description shown next to ``q`` in Swagger."""
-    exposure = resolve_exposure(model, exposed, max_depth, registry)
+    exposure = resolve_exposure(model, exposed, max_depth, registry, computed)
     lines = [
         f"JSON-encoded query for **{model.__name__}**.",
         "",

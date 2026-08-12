@@ -8,6 +8,11 @@ from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.type_api import TypeEngine
 from sqlmodel import SQLModel, inspect
 
+from querymate.core.computed import (
+    ComputedRegistry,
+    computed_expression,
+    computed_names,
+)
 from querymate.core.config import settings
 from querymate.core.exceptions import (
     UnknownFieldError,
@@ -581,16 +586,28 @@ class FilterBuilder:
     """
 
     def __init__(
-        self, model: type[SQLModel], resolver: DefaultFieldResolver | None = None
+        self,
+        model: type[SQLModel],
+        resolver: DefaultFieldResolver | None = None,
+        computed: ComputedRegistry | None = None,
     ) -> None:
         """Initialize the filter builder.
 
         Args:
             model (type[SQLModel]): The SQLModel class to build filters for.
             resolver (DefaultFieldResolver | None): Optional field resolver. Defaults to DefaultFieldResolver.
+            computed (ComputedRegistry | None): Custom computed fields, so a filter can
+                name one alongside stored columns.
         """
         self.model = model
         self.resolver = resolver or DefaultFieldResolver()
+        self.computed = computed
+
+    def _resolve(self, model: type[SQLModel], field: str) -> Any:
+        """Resolve a leaf field to a column or a computed expression."""
+        if field in computed_names(model, self.computed):
+            return computed_expression(model, field, self.computed)
+        return self.resolver.resolve(model, field)
 
     def _get_column_type(self, column: InstrumentedAttribute) -> TypeEngine | None:
         """Return the SQLAlchemy type associated with an instrumented column."""
@@ -777,7 +794,7 @@ class FilterBuilder:
                 head, remainder = field.split(".", 1)
                 nested.setdefault(head, {})[remainder] = condition
             else:
-                column = self.resolver.resolve(model, field)
+                column = self._resolve(model, field)
                 filters.append(self._leaf_condition(column, condition))
 
         for relationship_name, sub_filters in nested.items():

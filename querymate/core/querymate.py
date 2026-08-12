@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
+from querymate.core.computed import ComputedRegistry
 from querymate.core.config import settings
 from querymate.core.exceptions import InvalidQueryError
 from querymate.core.grouping import (
@@ -132,6 +133,7 @@ class Querymate(BaseModel):
     # Set by for_model(): the model this query targets and the surface it may use.
     _bound_model: type[SQLModel] | None = PrivateAttr(default=None)
     _exposure: ResolvedExposure | None = PrivateAttr(default=None)
+    _computed: ComputedRegistry | None = PrivateAttr(default=None)
 
     def _resolve_model(self, model: type[T] | None) -> type[T]:
         """Return the model to query, falling back to the one bound by for_model()."""
@@ -202,6 +204,7 @@ class Querymate(BaseModel):
         exposed: Exposed | None = None,
         max_depth: int | None = None,
         resources: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
     ) -> Callable[..., "Querymate"]:
         """Build a FastAPI dependency that documents and enforces queries for a model.
 
@@ -240,9 +243,9 @@ class Querymate(BaseModel):
                 return q.run(db)
             ```
         """
-        schema = build_query_schema(model, exposed, max_depth, resources)
-        description = describe_query(model, exposed, max_depth, resources)
-        examples = build_query_examples(model, exposed, max_depth, resources)
+        schema = build_query_schema(model, exposed, max_depth, resources, computed)
+        description = describe_query(model, exposed, max_depth, resources, computed)
+        examples = build_query_examples(model, exposed, max_depth, resources, computed)
 
         def dependency(
             q: Annotated[
@@ -261,7 +264,10 @@ class Querymate(BaseModel):
         ) -> Querymate:
             instance = cls._parse(q) if q else cls()
             instance._bound_model = model
-            instance._exposure = resolve_exposure(model, exposed, max_depth, resources)
+            instance._exposure = resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            )
+            instance._computed = computed
             return instance
 
         dependency.__name__ = f"{model.__name__}Query"
@@ -271,7 +277,9 @@ class Querymate(BaseModel):
         dependency.__querymate__ = {  # type: ignore[attr-defined]
             "model": model,
             "exposed": exposed,
-            "exposure": resolve_exposure(model, exposed, max_depth, resources),
+            "exposure": resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            ),
         }
         return dependency
 
@@ -353,7 +361,10 @@ class Querymate(BaseModel):
             QueryBuilder: The built query builder.
         """
         query_builder = QueryBuilder(
-            model=self._resolve_model(model), scopes=scopes, exposure=self._exposure
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
         )
         query_builder.prepare_scopes(self.select)
         query_builder.build(
@@ -375,7 +386,10 @@ class Querymate(BaseModel):
     ) -> QueryBuilder:
         """Async counterpart of :meth:`_make_builder`, awaiting async scope resolvers."""
         query_builder = QueryBuilder(
-            model=self._resolve_model(model), scopes=scopes, exposure=self._exposure
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
         )
         await query_builder.prepare_scopes_async(self.select)
         query_builder.build(
