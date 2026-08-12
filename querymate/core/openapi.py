@@ -162,12 +162,58 @@ class Exposed(BaseModel):
     sortable: list[str] | None = Field(default=None)
 
 
+class ResourceRegistry:
+    """Model-level exposure, applied wherever the model appears.
+
+    Path-level :class:`Exposed` alone is not enough, and the gap is a security one.
+    Excluding a field at the root says nothing about the same model reached by another
+    route through the graph: with only ``Exposed(fields=[...])`` on ``User``, a nested
+    ``posts.user`` re-opened ``User`` in full, handing back the very column the root
+    exposure existed to hide.
+
+    Field sensitivity is a property of the model, not of the path that reached it. Say
+    it once here and it holds at every depth::
+
+        resources = ResourceRegistry()
+        resources.register(User, Exposed(fields=["id", "name"]))
+
+    A path-level ``Exposed`` can still narrow further; it can never widen past this.
+    """
+
+    def __init__(self) -> None:
+        self._exposures: dict[type[SQLModel], Exposed] = {}
+
+    def register(self, model: type[SQLModel], exposed: Exposed) -> "ResourceRegistry":
+        """Declare the exposure that governs ``model`` everywhere it appears."""
+        self._exposures[model] = exposed
+        return self
+
+    def get(self, model: type[SQLModel]) -> Exposed | None:
+        """Return the registered exposure for ``model``, if any."""
+        return self._exposures.get(model)
+
+
+def _narrow(candidates: list[str], *restrictions: list[str] | None) -> list[str]:
+    """Intersect ``candidates`` with each restriction that was actually declared."""
+    result = candidates
+    for restriction in restrictions:
+        if restriction is not None:
+            allowed = set(restriction)
+            result = [item for item in result if item in allowed]
+    return result
+
+
 class ResolvedExposure:
     """An :class:`Exposed` resolved against a concrete model.
 
     Answers the questions the query builder and the schema generator both need: may
     this field be selected, filtered, sorted; may this relationship be expanded, and
     with what exposure.
+
+    Two declarations are combined: the model-level one from a
+    :class:`ResourceRegistry`, which holds at every path, and the path-level one, which
+    may narrow it further. Restrictions only ever intersect - neither can widen the
+    other.
     """
 
     def __init__(
@@ -176,35 +222,49 @@ class ResolvedExposure:
         exposed: Exposed | None,
         depth: int,
         max_depth: int,
+        registry: ResourceRegistry | None = None,
     ) -> None:
         self.model = model
         self.depth = depth
         self.max_depth = max_depth
+        self.registry = registry
+
+        registered = registry.get(model) if registry is not None else None
 
         all_fields = list(model.model_fields.keys())
         mapper: Mapper = inspect(model)
         all_relationships = set(mapper.relationships.keys())
         # Relationship attributes are not columns; without this they would show up as
         # selectable scalar fields.
-        self.fields: list[str] = [
-            field
-            for field in (exposed.fields if exposed and exposed.fields else all_fields)
-            if field not in all_relationships
-        ]
-        self.filterable: list[str] = list(
-            exposed.filterable if exposed and exposed.filterable else self.fields
+        selectable = [f for f in all_fields if f not in all_relationships]
+
+        self.fields: list[str] = _narrow(
+            selectable,
+            registered.fields if registered else None,
+            exposed.fields if exposed else None,
         )
-        self.sortable: list[str] = list(
-            exposed.sortable if exposed and exposed.sortable else self.fields
+        self.filterable: list[str] = _narrow(
+            self.fields,
+            registered.filterable if registered else None,
+            exposed.filterable if exposed else None,
+        )
+        self.sortable: list[str] = _narrow(
+            self.fields,
+            registered.sortable if registered else None,
+            exposed.sortable if exposed else None,
         )
 
-        self._relationship_exposure: dict[str, Exposed | None]
-        if exposed and exposed.relationships is not None:
-            self._relationship_exposure = dict(exposed.relationships)
-        elif depth < max_depth:
-            self._relationship_exposure = dict.fromkeys(all_relationships)
-        else:
-            self._relationship_exposure = {}
+        self._relationship_exposure: dict[str, Exposed | None] = {}
+        if depth < max_depth:
+            names: list[str] = sorted(all_relationships)
+            declared: dict[str, Exposed | None] = {}
+            if registered and registered.relationships is not None:
+                names = _narrow(names, list(registered.relationships))
+                declared.update(registered.relationships)
+            if exposed and exposed.relationships is not None:
+                names = _narrow(names, list(exposed.relationships))
+                declared.update(exposed.relationships)
+            self._relationship_exposure = {name: declared.get(name) for name in names}
 
     @property
     def relationships(self) -> list[str]:
@@ -224,6 +284,7 @@ class ResolvedExposure:
             self._relationship_exposure[name],
             self.depth + 1,
             self.max_depth,
+            self.registry,
         )
 
     def check_field(self, field: str, *, usage: str = "selected") -> None:
@@ -260,6 +321,7 @@ def resolve_exposure(
     model: type[SQLModel],
     exposed: Exposed | None = None,
     max_depth: int | None = None,
+    registry: ResourceRegistry | None = None,
 ) -> ResolvedExposure:
     """Resolve an exposure declaration against a model."""
     return ResolvedExposure(
@@ -267,6 +329,7 @@ def resolve_exposure(
         exposed,
         depth=0,
         max_depth=max_depth if max_depth is not None else settings.MAX_SELECT_DEPTH,
+        registry=registry,
     )
 
 
@@ -373,6 +436,7 @@ def build_query_schema(
     model: type[SQLModel],
     exposed: Exposed | None = None,
     max_depth: int | None = None,
+    registry: ResourceRegistry | None = None,
 ) -> dict[str, Any]:
     """Build the JSON Schema of the ``q`` parameter for one model.
 
@@ -384,7 +448,7 @@ def build_query_schema(
     Returns:
         dict[str, Any]: A JSON Schema describing the decoded ``q`` object.
     """
-    exposure = resolve_exposure(model, exposed, max_depth)
+    exposure = resolve_exposure(model, exposed, max_depth, registry)
     sortable = sorted(exposure.sortable)
     sort_values = [*sortable, *[f"-{field}" for field in sortable]]
 
@@ -460,6 +524,7 @@ def build_query_examples(
     model: type[SQLModel],
     exposed: Exposed | None = None,
     max_depth: int | None = None,
+    registry: ResourceRegistry | None = None,
 ) -> dict[str, Any]:
     """Build OpenAPI examples using real field names from the model.
 
@@ -468,7 +533,7 @@ def build_query_examples(
     """
     import json
 
-    exposure = resolve_exposure(model, exposed, max_depth)
+    exposure = resolve_exposure(model, exposed, max_depth, registry)
     fields = exposure.fields[:2] or ["id"]
 
     def _interesting(candidates: list[str], fallback: str) -> str:
@@ -552,9 +617,10 @@ def describe_query(
     model: type[SQLModel],
     exposed: Exposed | None = None,
     max_depth: int | None = None,
+    registry: ResourceRegistry | None = None,
 ) -> str:
     """Build the human-readable description shown next to ``q`` in Swagger."""
-    exposure = resolve_exposure(model, exposed, max_depth)
+    exposure = resolve_exposure(model, exposed, max_depth, registry)
     lines = [
         f"JSON-encoded query for **{model.__name__}**.",
         "",

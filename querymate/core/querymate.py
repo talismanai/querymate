@@ -20,6 +20,7 @@ from querymate.core.grouping import (
 from querymate.core.openapi import (
     Exposed,
     ResolvedExposure,
+    ResourceRegistry,
     build_query_examples,
     build_query_schema,
     describe_query,
@@ -200,6 +201,7 @@ class Querymate(BaseModel):
         *,
         exposed: Exposed | None = None,
         max_depth: int | None = None,
+        resources: ResourceRegistry | None = None,
     ) -> Callable[..., "Querymate"]:
         """Build a FastAPI dependency that documents and enforces queries for a model.
 
@@ -238,9 +240,9 @@ class Querymate(BaseModel):
                 return q.run(db)
             ```
         """
-        schema = build_query_schema(model, exposed, max_depth)
-        description = describe_query(model, exposed, max_depth)
-        examples = build_query_examples(model, exposed, max_depth)
+        schema = build_query_schema(model, exposed, max_depth, resources)
+        description = describe_query(model, exposed, max_depth, resources)
+        examples = build_query_examples(model, exposed, max_depth, resources)
 
         def dependency(
             q: Annotated[
@@ -259,10 +261,18 @@ class Querymate(BaseModel):
         ) -> Querymate:
             instance = cls._parse(q) if q else cls()
             instance._bound_model = model
-            instance._exposure = resolve_exposure(model, exposed, max_depth)
+            instance._exposure = resolve_exposure(model, exposed, max_depth, resources)
             return instance
 
         dependency.__name__ = f"{model.__name__}Query"
+        # Marker read by the descriptor exporter when it walks an app's routes, so the
+        # emitted contract is derived from what the app actually serves rather than
+        # from a description maintained alongside it.
+        dependency.__querymate__ = {  # type: ignore[attr-defined]
+            "model": model,
+            "exposed": exposed,
+            "exposure": resolve_exposure(model, exposed, max_depth, resources),
+        }
         return dependency
 
     @classmethod

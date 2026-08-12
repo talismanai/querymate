@@ -6,6 +6,8 @@ __version__ = "0.5.2"  # Update this with your actual version
 
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
+from .core.descriptor import describe_app as describe_app
+from .core.descriptor import describe_resource as describe_resource
 from .core.exceptions import DepthExceededError as DepthExceededError
 from .core.exceptions import InvalidQueryError as InvalidQueryError
 from .core.exceptions import QuerymateError as QuerymateError
@@ -80,6 +82,7 @@ from .core.grouping import GroupedResponse as GroupedResponse
 from .core.grouping import GroupKeyExtractor as GroupKeyExtractor
 from .core.grouping import GroupResult as GroupResult
 from .core.openapi import Exposed as Exposed
+from .core.openapi import ResourceRegistry as ResourceRegistry
 from .core.openapi import build_query_schema as build_query_schema
 from .core.query_builder import JoinType as JoinType
 from .core.query_builder import QueryBuilder as QueryBuilder

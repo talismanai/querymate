@@ -27,6 +27,7 @@ from sqlmodel.pool import StaticPool
 from querymate import (
     Exposed,
     Querymate,
+    ResourceRegistry,
     ScopeRegistry,
     install_exception_handler,
 )
@@ -118,15 +119,13 @@ def post_scope(ctx):  # type: ignore[no-untyped-def]
 app = FastAPI(title="QueryMate example")
 install_exception_handler(app)
 
-UsersQuery = Querymate.for_model(
-    User,
-    exposed=Exposed(
-        # hashed_password is deliberately absent: it is neither documented nor
-        # queryable, and asking for it is a 400.
-        fields=["id", "name", "email"],
-        relationships={"posts": Exposed(fields=["id", "title", "status"])},
-    ),
-)
+# Declared per model, so it holds wherever the model is reached - including through
+# posts.user. Declaring it only on the endpoint would leave that back door open.
+resources = ResourceRegistry()
+resources.register(User, Exposed(fields=["id", "name", "email"]))
+resources.register(Post, Exposed(fields=["id", "title", "status"]))
+
+UsersQuery = Querymate.for_model(User, resources=resources)
 
 
 @app.get("/users")

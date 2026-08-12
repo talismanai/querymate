@@ -14,6 +14,9 @@ email = "mauricio@banduk.com"
 requires = [ "setuptools>=61.0",]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+querymate = "querymate.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/banduk/querymate"
 Repository = "https://github.com/banduk/querymate"

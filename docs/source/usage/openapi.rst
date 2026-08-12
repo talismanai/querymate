@@ -46,6 +46,30 @@ into a map of the sensitive ones:
         ),
     )
 
+Declare it per model, not per route
+-----------------------------------
+
+``Exposed`` on a route governs that route's *root*. It says nothing about the same
+model reached through a relationship, and that gap is a security one: with only a
+route-level exposure on ``User``, a nested ``posts.user`` re-opened ``User`` in full
+and handed back the very column the exposure existed to hide.
+
+Field sensitivity is a property of the model, not of the path that reached it. Declare
+it once in a ``ResourceRegistry`` and it holds at every depth:
+
+.. code-block:: python
+
+    from querymate import Exposed, Querymate, ResourceRegistry
+
+    resources = ResourceRegistry()
+    resources.register(User, Exposed(fields=["id", "name", "created_at"]))
+    resources.register(Post, Exposed(fields=["id", "title", "status"]))
+
+    UsersQuery = Querymate.for_model(User, resources=resources)
+
+A route-level ``Exposed`` can still narrow further, but never widen: restrictions
+intersect.
+
 ``filterable`` and ``sortable`` default to ``fields``; a field can be readable without
 being either. Relationships map to their own ``Exposed`` (``None`` means "everything on
 that model"), and omitting ``relationships`` exposes them all down to ``max_depth``.
