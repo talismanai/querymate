@@ -34,6 +34,18 @@ class QueryMateSettings(BaseSettings):
         default="offset", description="Offset parameter name"
     )
 
+    # Cursor pagination
+    CURSOR_PARAM_NAME: str = Field(
+        default="cursor", description="Cursor parameter name"
+    )
+    WITH_TOTAL_PARAM_NAME: str = Field(
+        default="with_total",
+        description=(
+            "Name of the flag asking a cursor page to also count the whole set. "
+            "Off by default: the count is the expensive part a cursor exists to avoid."
+        ),
+    )
+
     # Aggregation
     AGGREGATE_PARAM_NAME: str = Field(
         default="aggregate", description="Aggregate parameter name"

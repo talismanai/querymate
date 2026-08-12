@@ -217,6 +217,8 @@ class DescriptorBuilder:
                     "offset": settings.OFFSET_PARAM_NAME,
                     "group_by": settings.GROUP_BY_PARAM_NAME,
                     "join_type": settings.JOIN_TYPE_PARAM_NAME,
+                    "cursor": settings.CURSOR_PARAM_NAME,
+                    "with_total": settings.WITH_TOTAL_PARAM_NAME,
                     "aggregate": settings.AGGREGATE_PARAM_NAME,
                     "having": settings.HAVING_PARAM_NAME,
                 },
@@ -241,8 +243,11 @@ class DescriptorBuilder:
                 "response": {"items": "results", "group_key": "key"},
             },
             "pagination": {
-                "style": "offset",
-                "response": {
+                # Both styles are available on every resource; which one an endpoint
+                # uses is the application's choice of method, not a property of the
+                # resource, so a client is told about both.
+                "styles": ["offset", "cursor"],
+                "offset": {
                     "items": "items",
                     "meta": "pagination",
                     "fields": [
@@ -253,6 +258,15 @@ class DescriptorBuilder:
                         "previous_page",
                         "next_page",
                     ],
+                },
+                "cursor": {
+                    "items": "items",
+                    "meta": "cursor",
+                    "fields": ["next", "has_more", "total"],
+                    # A cursor is only valid for the query that produced it: the sort
+                    # and the filter must be sent back unchanged with it.
+                    "opaque": True,
+                    "stable_for": ["sort", "filter"],
                 },
             },
             "errors": {

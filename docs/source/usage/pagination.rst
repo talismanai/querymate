@@ -1,7 +1,9 @@
 Pagination
 ==========
 
-QueryMate implements offset-based pagination using ``limit`` and ``offset`` parameters.
+QueryMate offers two styles: offset pagination, with ``limit`` and ``offset``, and
+cursor pagination, with ``limit`` and ``cursor``. Both are available on every
+resource; which one an endpoint uses is a choice of method, not of configuration.
 
 Basic Pagination
 -------------
@@ -51,13 +53,77 @@ You can combine pagination with filtering and sorting:
 
     /users?q={"filter":{"age":{"gt":18}},"sort":["-name"],"limit":10,"offset":0}
 
+Cursor Pagination
+-----------------
+
+``offset`` makes the database find and discard N rows before returning any, so page
+1000 costs a thousand pages of work. It is also defined against a snapshot that no
+longer exists: insert a record while someone is paging, and every later page shifts
+by one — records get shown twice, or skipped.
+
+A cursor names the last record seen, in the query's own order, so the boundary between
+pages cannot move.
+
+.. code-block:: python
+
+    page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(db, Post)
+    # page.items         -> the records
+    # page.cursor.next   -> pass this back to get the following page
+    # page.cursor.has_more
+
+    following = Querymate(
+        sort=["-created_at"], limit=20, cursor=page.cursor.next
+    ).run_cursor_paginated(db, Post)
+
+Query parameter:
+
+.. code-block:: text
+
+    /posts?q={"sort":["-created_at"],"limit":20}
+    /posts?q={"sort":["-created_at"],"limit":20,"cursor":"eyJrIjoi..."}
+
+The cursor is opaque — pass it back verbatim. It carries a fingerprint of the sort and
+the filter that produced it, and is refused if either changed, rather than silently
+returning a page from a different query.
+
+What cursor pagination requires
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **A total order.** ``sort=["name"]`` is not one: two people named the same are in no
+  defined order and the page boundary would land arbitrarily between them. The primary
+  key is appended as a tiebreaker automatically, so any sort works — but the sort must
+  be over the record's own stored columns. Sorting across a relationship, on a computed
+  field, or by a custom value order cannot be resumed from, and is refused with a clear
+  error rather than paged incorrectly.
+* **The same query on every page.** Change the sort or the filter and you start again
+  from the first page.
+* **No** ``offset``\ **.** A cursor already says where the page starts; sending both is
+  an error.
+
+The total
+~~~~~~~~~
+
+``cursor.total`` is absent unless you ask for it, because counting the whole set is
+exactly the work cursor pagination exists to avoid:
+
+.. code-block:: text
+
+    /posts?q={"limit":20,"with_total":true}
+
+Which to use
+------------
+
+* **Offset** for a page-numbered UI over a modest, mostly-static set, where users jump
+  to page 7.
+* **Cursor** for infinite scroll, exports, background jobs, and anything over a large
+  or actively-written table.
+
 Best Practices
 ------------
 
 * Use consistent page sizes across requests
-* Keep track of total count for proper pagination UI
-* Consider implementing cursor-based pagination for large datasets
 * Be mindful of the maximum limit (200) when designing your API
+* Prefer cursor pagination for large or frequently-written datasets
 * Use appropriate indexes on your database for efficient pagination 
 
 

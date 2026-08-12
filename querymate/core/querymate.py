@@ -30,7 +30,13 @@ from querymate.core.openapi import (
 )
 from querymate.core.query_builder import JoinType, QueryBuilder
 from querymate.core.scope import BoundScopes
-from querymate.types import FieldSelection, PaginatedResponse, PaginationInfo
+from querymate.types import (
+    CursorInfo,
+    CursorPage,
+    FieldSelection,
+    PaginatedResponse,
+    PaginationInfo,
+)
 
 T = TypeVar("T", bound=SQLModel)
 R = TypeVar("R")
@@ -119,6 +125,22 @@ class Querymate(BaseModel):
         ge=0,
         description="Number of records to skip",
         alias=settings.OFFSET_PARAM_NAME,
+    )
+    cursor: str | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Opaque marker of the last record of the previous page. Use with "
+            "run_cursor_paginated(); pass the 'next' value back verbatim."
+        ),
+        alias=settings.CURSOR_PARAM_NAME,
+    )
+    with_total: bool | None = Field(  # type: ignore[literal-required]
+        default=None,
+        description=(
+            "Ask a cursor page to also count the whole set. Off by default: that "
+            "count is the expensive part cursor pagination exists to avoid."
+        ),
+        alias=settings.WITH_TOTAL_PARAM_NAME,
     )
     aggregate: dict[str, Any] | None = Field(  # type: ignore[literal-required]
         default=None,
@@ -513,6 +535,122 @@ class Querymate(BaseModel):
         return PaginatedResponse(
             items=serialized,
             pagination=self._pagination(total),
+        )
+
+    # -------------------------------------------------------------------------
+    # Cursor Pagination
+    # -------------------------------------------------------------------------
+
+    def run_cursor_paginated(
+        self,
+        db: Session,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Return one page located by cursor rather than by offset.
+
+        ``offset`` makes the database find and discard N rows before returning any,
+        and is defined against a snapshot that no longer exists - insert a record
+        while someone pages through and every later page shifts by one. A cursor names
+        the last record seen, in the query's own order, so the boundary cannot move.
+
+        Pass the returned ``cursor.next`` back as ``cursor`` to get the following
+        page. The sort and the filter must stay the same; a cursor carries a
+        fingerprint of the query that made it and is refused otherwise.
+
+        Returns:
+            CursorPage[dict[str, Any]]: The page and where it sits in the sequence.
+
+        Example:
+            ```python
+            page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(
+                db, Post
+            )
+            next_page = Querymate(
+                sort=["-created_at"], limit=20, cursor=page.cursor.next
+            ).run_cursor_paginated(db, Post)
+            ```
+        """
+        builder, size = self._cursor_builder(model, scopes)
+        return self._cursor_page(builder, builder.fetch(db), size, db)
+
+    async def run_cursor_paginated_async(
+        self,
+        db: AsyncSession,
+        model: type[T] | None = None,
+        *,
+        scopes: BoundScopes | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Async counterpart of :meth:`run_cursor_paginated`."""
+        builder, size = await self._cursor_builder_async(model, scopes)
+        rows: list[Any] = await builder.fetch_async(db)
+        total = await builder.count_async(db) if self.with_total else None
+        return self._cursor_page(builder, rows, size, None, total)
+
+    def _cursor_builder(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> tuple[QueryBuilder, int]:
+        """Build the query for one cursor page, and return the page size asked for."""
+        builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        builder.prepare_scopes(self.select)
+        return self._finish_cursor_builder(builder)
+
+    async def _cursor_builder_async(
+        self, model: type[T] | None, scopes: BoundScopes | None
+    ) -> tuple[QueryBuilder, int]:
+        """Async counterpart of :meth:`_cursor_builder`."""
+        builder = QueryBuilder(
+            model=self._resolve_model(model),
+            scopes=scopes,
+            exposure=self._exposure,
+            computed=self._computed,
+        )
+        await builder.prepare_scopes_async(self.select)
+        return self._finish_cursor_builder(builder)
+
+    def _finish_cursor_builder(self, builder: QueryBuilder) -> tuple[QueryBuilder, int]:
+        """Apply everything but the ordering strategy shared with offset paging."""
+        if self.offset:
+            raise InvalidQueryError(
+                "A cursor already says where the page starts; 'offset' cannot be "
+                "combined with it."
+            )
+        size = self.limit if self.limit is not None else settings.DEFAULT_LIMIT
+        builder.apply_select(self.select, join_type=self.join_type)
+        builder.apply_filter(self.filter)
+        builder.apply_keyset(self.sort, self.cursor)
+        # One row more than asked for, to learn whether another page exists without
+        # counting the whole set. It is dropped before serializing.
+        builder.limit = size
+        builder.query = builder.query.limit(size + 1)
+        return builder, size
+
+    def _cursor_page(
+        self,
+        builder: QueryBuilder,
+        rows: list[Any],
+        size: int,
+        db: Session | None = None,
+        total: int | None = None,
+    ) -> CursorPage[dict[str, Any]]:
+        """Trim the probe row, encode the next cursor, and shape the response."""
+        has_more = len(rows) > size
+        page = rows[:size]
+        if self.with_total and db is not None:
+            total = builder.count(db)
+        return CursorPage(
+            items=builder.serialize(page),
+            cursor=CursorInfo(
+                next=builder.cursor_for(page[-1]) if has_more and page else None,
+                has_more=has_more,
+                total=total,
+            ),
         )
 
     async def run_async(

@@ -10,6 +10,8 @@ from .core.aggregate import InvalidAggregateError as InvalidAggregateError
 from .core.computed import ComputedRegistry as ComputedRegistry
 from .core.config import QueryMateSettings as QueryMateSettings
 from .core.config import settings as settings
+from .core.cursor import InvalidCursorError as InvalidCursorError
+from .core.cursor import SortKey as SortKey
 from .core.descriptor import describe_app as describe_app
 from .core.descriptor import describe_resource as describe_resource
 from .core.exceptions import DepthExceededError as DepthExceededError
@@ -97,6 +99,8 @@ from .core.scope import ScopeCache as ScopeCache
 from .core.scope import ScopeContext as ScopeContext
 from .core.scope import ScopeRegistry as ScopeRegistry
 from .core.scope import UnscopedModelError as UnscopedModelError
+from .types import CursorInfo as CursorInfo
+from .types import CursorPage as CursorPage
 from .types import PaginatedResponse as PaginatedResponse
 from .types import PaginationInfo as PaginationInfo
 from .types import QuerymatePaginatedResponse as QuerymatePaginatedResponse

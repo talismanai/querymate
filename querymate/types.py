@@ -47,6 +47,23 @@ class PaginatedResponse(BaseModel, Generic[T]):
     pagination: PaginationInfo
 
 
+class CursorInfo(BaseModel):
+    """Where a cursor page sits in the sequence."""
+
+    next: str | None = None
+    has_more: bool = False
+    # Present only when the caller asked for it: counting the whole set is the work a
+    # cursor exists to avoid, so it is never done implicitly.
+    total: int | None = None
+
+
+class CursorPage(BaseModel, Generic[T]):
+    """A page located by cursor rather than by offset."""
+
+    items: list[T]
+    cursor: CursorInfo
+
+
 # Type alias for flexible response that can be either paginated or just items
 QuerymateResponse = list[dict[str, Any]] | dict[str, Any]
 

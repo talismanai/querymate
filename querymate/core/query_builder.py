@@ -17,6 +17,15 @@ from querymate.core.computed import (
     computed_names,
 )
 from querymate.core.config import settings
+from querymate.core.cursor import (
+    InvalidCursorError,
+    SortKey,
+    decode_cursor,
+    encode_cursor,
+    fingerprint,
+    keyset_condition,
+    order_by,
+)
 from querymate.core.exceptions import (
     DepthExceededError,
     SelectionTooLargeError,
@@ -24,6 +33,7 @@ from querymate.core.exceptions import (
     UnknownRelationshipError,
 )
 from querymate.core.filter import FilterBuilder
+from querymate.core.openapi import python_type_of
 from querymate.core.scope import BoundScopes
 from querymate.types import FieldSelection, NormalizedSelection
 
@@ -137,6 +147,8 @@ class QueryBuilder:
         # Relationships needing their own ordering or page, keyed by path. These are
         # loaded with a window function instead of an eager loader.
         self._relationship_windows: dict[tuple[str, ...], dict[str, Any]] = {}
+        # The total order a cursor is defined against, once one has been resolved.
+        self._keyset: list[SortKey] = []
 
     def _models_in_select(
         self, model: type[SQLModel], fields: Sequence[NormalizedSelection]
@@ -1052,6 +1064,93 @@ class QueryBuilder:
             )
 
         return self
+
+    def keyset_keys(self, sort: list[str | dict[str, Any]] | None) -> list[SortKey]:
+        """Resolve the total order a cursor will be defined against.
+
+        The requested sort, checked against what this caller may sort on, with the
+        primary key appended as a tiebreaker. Without the tiebreaker two rows sharing
+        a sort value are in no defined order, and the boundary between pages lands
+        somewhere arbitrary between them.
+
+        Raises:
+            InvalidCursorError: If the sort cannot define a stable total order.
+        """
+        keys: list[SortKey] = []
+        for entry in sort or []:
+            if isinstance(entry, dict):
+                raise InvalidCursorError(
+                    "A custom value order cannot be paged by cursor; the order is a "
+                    "ranking, not a column, so there is nothing to resume from.",
+                )
+            field = entry
+            descending = False
+            if field.startswith(("-", "+")):
+                descending = field.startswith("-")
+                field = field[1:]
+            if "." in field:
+                raise InvalidCursorError(
+                    "Cursor pagination sorts on the record's own fields; "
+                    f"'{field}' crosses a relationship.",
+                    field=field,
+                )
+            if self._access_is_restricted():
+                self._enforce_sort_access(self.model, field, self.exposure)
+            mapper: Mapper = inspect(self.model)
+            if field not in mapper.columns:
+                raise InvalidCursorError(
+                    f"'{field}' is not a stored column, so a cursor cannot resume "
+                    "from it.",
+                    field=field,
+                )
+            keys.append(SortKey(field, descending))
+
+        mapper = inspect(self.model)
+        primary_key = str(mapper.primary_key[0].key)
+        if not any(key.field == primary_key for key in keys):
+            keys.append(SortKey(primary_key))
+        return keys
+
+    def apply_keyset(
+        self, sort: list[str | dict[str, Any]] | None, cursor: str | None
+    ) -> "QueryBuilder":
+        """Order by a stable total order and, given a cursor, start after it.
+
+        This replaces :meth:`apply_sort` for cursor pagination: the ordering has to be
+        emitted here, with explicit null placement, so that the comparison finding
+        "everything after the cursor" agrees with it exactly.
+        """
+        keys = self.keyset_keys(sort)
+        self._keyset = keys
+        self.sort = list(sort or [])
+        columns = [getattr(self.model, key.field) for key in keys]
+
+        self.query = self.query.order_by(
+            *(
+                order_by(column, key.descending)
+                for column, key in zip(columns, keys, strict=True)
+            )
+        )
+
+        if cursor:
+            values = decode_cursor(
+                cursor,
+                [python_type_of(self.model, key.field) for key in keys],
+                self.keyset_fingerprint(),
+            )
+            condition = keyset_condition(columns, keys, values)
+            if condition is not None:
+                self.query = self.query.where(condition)
+        return self
+
+    def keyset_fingerprint(self) -> str:
+        """Identify the query the current cursor keys belong to."""
+        return fingerprint(self.model.__name__, self._keyset, self.filter)
+
+    def cursor_for(self, instance: SQLModel) -> str:
+        """Encode the cursor that resumes immediately after ``instance``."""
+        values = [getattr(instance, key.field) for key in self._keyset]
+        return encode_cursor(values, self.keyset_fingerprint())
 
     def apply_limit(self, limit: int | None = None) -> "QueryBuilder":
         """Apply limit and offset to the query.

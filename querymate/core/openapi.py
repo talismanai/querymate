@@ -541,6 +541,23 @@ def build_query_schema(
                 "default": settings.DEFAULT_OFFSET,
                 "description": "Number of records to skip.",
             },
+            settings.CURSOR_PARAM_NAME: {
+                "type": "string",
+                "description": (
+                    "Opaque marker of the last record of the previous page. Pass back "
+                    "the 'next' value verbatim, with the same sort and filter. "
+                    "Mutually exclusive with "
+                    f"'{settings.OFFSET_PARAM_NAME}'."
+                ),
+            },
+            settings.WITH_TOTAL_PARAM_NAME: {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Count the whole set alongside a cursor page. Off by default: "
+                    "that count is the work cursor pagination exists to avoid."
+                ),
+            },
             settings.JOIN_TYPE_PARAM_NAME: {
                 "type": "string",
                 "enum": ["inner", "left", "outer"],
