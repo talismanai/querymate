@@ -121,3 +121,43 @@ than a 500 (see :doc:`errors`):
     from querymate import install_exception_handler
 
     install_exception_handler(app)
+
+Sending the Query in the Body
+-----------------------------
+
+A URL has a length limit — proxies and servers commonly cut off somewhere between
+4KB and 8KB — and this grammar reaches it honestly: a deep selection with a long
+``in`` list is a real query, not an abuse. Once it does, the whole API becomes
+unavailable to that caller with no recourse.
+
+``body_for_model`` accepts the same document as a JSON request body:
+
+.. code-block:: python
+
+    UsersQuery = Querymate.for_model(User)
+    UsersSearch = Querymate.body_for_model(User)
+
+    @app.get("/users")
+    def list_users(q: Querymate = Depends(UsersQuery), db=Depends(get_db)):
+        return q.run(db)
+
+    @app.post("/users/query")
+    def search_users(q: Querymate = Depends(UsersSearch), db=Depends(get_db)):
+        return q.run(db)
+
+.. code-block:: text
+
+    POST /users/query
+    {"select": ["id", "name"], "filter": {"id": {"in": [1, 2, 3, ...]}}}
+
+The body *is* the ``q`` object, not an envelope around it, so the same document works
+either way. The generated schema is the same one, published as a request body
+component named after the model, and the exposed surface is enforced identically — a
+second door into the same room needs the same lock.
+
+A POST that reads nothing is a wart, but a smaller one than a query that cannot be
+sent. Keep the GET as the primary route and offer this for the queries that outgrow it.
+
+The resource descriptor records which transport each endpoint uses, under
+``endpoints[].transport``, so a generated client knows whether to send a parameter or
+a body.

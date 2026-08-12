@@ -186,18 +186,28 @@ class DescriptorBuilder:
         return name
 
     def add_endpoint(
-        self, path: str, method: str, exposure: ResolvedExposure, max_depth: int
+        self,
+        path: str,
+        method: str,
+        exposure: ResolvedExposure,
+        max_depth: int,
+        transport: str = "query",
     ) -> None:
-        """Record an endpoint and the resource it queries."""
-        self._endpoints.append(
-            {
-                "path": path,
-                "method": method,
-                "resource": self.add_resource(exposure),
-                "parameter": settings.QUERY_PARAM_NAME,
-                "max_depth": max_depth,
-            }
-        )
+        """Record an endpoint, the resource it queries, and how the query reaches it.
+
+        The same query travels either in the ``q`` parameter or as the request body;
+        a generated client has to know which, and only the endpoint can say.
+        """
+        entry: dict[str, Any] = {
+            "path": path,
+            "method": method,
+            "resource": self.add_resource(exposure),
+            "transport": transport,
+            "max_depth": max_depth,
+        }
+        if transport == "query":
+            entry["parameter"] = settings.QUERY_PARAM_NAME
+        self._endpoints.append(entry)
 
     def build(self) -> dict[str, Any]:
         """Return the finished document.
@@ -338,6 +348,7 @@ def describe_app(app: Any) -> dict[str, Any]:
                     method=method,
                     exposure=spec["exposure"],
                     max_depth=spec["exposure"].max_depth,
+                    transport=spec.get("transport", "query"),
                 )
 
     return builder.build()

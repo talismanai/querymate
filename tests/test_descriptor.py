@@ -65,6 +65,7 @@ def test_descriptor_is_derived_from_the_app(db: Session) -> None:
             "path": "/users",
             "method": "GET",
             "resource": "User",
+            "transport": "query",
             "parameter": settings.QUERY_PARAM_NAME,
             "max_depth": settings.MAX_SELECT_DEPTH,
         }

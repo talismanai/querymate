@@ -1,11 +1,12 @@
 import json
 from collections.abc import Callable
+from types import new_class
 from typing import Annotated, Any, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode
 
-from fastapi import Query, Request
+from fastapi import Body, Query, Request
 from fastapi.datastructures import QueryParams
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, RootModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, SQLModel
 
@@ -40,6 +41,36 @@ from querymate.types import (
 
 T = TypeVar("T", bound=SQLModel)
 R = TypeVar("R")
+
+
+def _query_body_model(
+    model: type[SQLModel], schema: dict[str, Any]
+) -> type[RootModel[dict[str, Any]]]:
+    """Wrap the query grammar in a body model carrying its generated schema.
+
+    The body is the ``q`` object itself, not an envelope around it, so the two
+    transports accept exactly the same document. A RootModel says that, and
+    overriding the JSON Schema puts the per-model grammar - fields, operators,
+    relationships - into the OpenAPI request body rather than a bare ``object``.
+    """
+
+    def json_schema(cls: Any, core_schema: Any, handler: Any) -> Any:
+        return schema
+
+    def body(namespace: dict[str, Any]) -> None:
+        namespace["__module__"] = __name__
+        namespace["__get_pydantic_json_schema__"] = classmethod(json_schema)
+
+    # Built by name rather than declared, because the OpenAPI component is named after
+    # the class and two resources would otherwise both be called "QueryBody".
+    return cast(
+        type[RootModel[dict[str, Any]]],
+        new_class(
+            f"{model.__name__}QueryBody",
+            (RootModel[dict[str, Any]],),
+            exec_body=body,
+        ),
+    )
 
 
 # Type aliases for better readability
@@ -313,6 +344,71 @@ class Querymate(BaseModel):
         dependency.__querymate__ = {  # type: ignore[attr-defined]
             "model": model,
             "exposed": exposed,
+            "transport": "query",
+            "exposure": resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            ),
+        }
+        return dependency
+
+    @classmethod
+    def body_for_model(
+        cls,
+        model: type[T],
+        *,
+        exposed: Exposed | None = None,
+        max_depth: int | None = None,
+        resources: ResourceRegistry | None = None,
+        computed: ComputedRegistry | None = None,
+    ) -> Callable[..., "Querymate"]:
+        """The same query, sent as a JSON body instead of a URL parameter.
+
+        A URL has a length limit - proxies and servers commonly cut off somewhere
+        between 4KB and 8KB - and this grammar reaches it honestly: a deep selection
+        with a long ``in`` list is a real query, not an abuse. Once it does, the whole
+        API becomes unavailable to that caller with no recourse.
+
+        So the query travels in the body instead. The grammar is unchanged, the schema
+        is the same one, and the resulting ``Querymate`` behaves identically - only the
+        envelope differs. Mount it as a POST alongside the GET, or on its own::
+
+            UsersQuery = Querymate.body_for_model(User)
+
+            @app.post("/users/query")
+            def search_users(q: Querymate = Depends(UsersQuery), db=Depends(get_db)):
+                return q.run(db)
+
+        A POST that reads nothing is a wart, but it is a smaller one than a query that
+        cannot be sent. Keep the GET as the primary route and offer this for the
+        queries that outgrow it.
+
+        Returns:
+            A dependency returning a Querymate bound to ``model``.
+        """
+        schema = build_query_schema(model, exposed, max_depth, resources, computed)
+        description = describe_query(model, exposed, max_depth, resources, computed)
+        examples = build_query_examples(model, exposed, max_depth, resources, computed)
+        body_model = _query_body_model(model, schema)
+
+        def dependency(
+            body: Annotated[  # type: ignore[valid-type]
+                body_model,
+                Body(description=description, openapi_examples=examples),
+            ],
+        ) -> Querymate:
+            instance = cls.model_validate(body.root)  # type: ignore[attr-defined]
+            instance._bound_model = model
+            instance._exposure = resolve_exposure(
+                model, exposed, max_depth, resources, computed
+            )
+            instance._computed = computed
+            return instance
+
+        dependency.__name__ = f"{model.__name__}QueryBody"
+        dependency.__querymate__ = {  # type: ignore[attr-defined]
+            "model": model,
+            "exposed": exposed,
+            "transport": "body",
             "exposure": resolve_exposure(
                 model, exposed, max_depth, resources, computed
             ),
