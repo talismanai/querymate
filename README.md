@@ -36,6 +36,11 @@ Built for teams that want to build robust APIs with FastAPI and SQLModel.
 | 📁 Grouping                   | Group results by field with date granularity and timezone support          |
 | 🔐 Authorization Scopes       | Apply your app's access rules to every model a query loads                 |
 | 📖 OpenAPI Schema             | Document `q` per model: fields, operators by type, runnable examples       |
+| 🧮 Aggregation                | `count`/`sum`/`avg`/`min`/`max`, grouped, with `having`                    |
+| ➡️ Cursor Pagination           | Keyset pages that survive inserts, with a cursor that fits its query       |
+| 📮 Body Transport             | Send the same query as a POST body when it outgrows the URL                |
+| 💰 Cost Budget                | Score a query and refuse the ones a caller may not afford                  |
+| 🗝️ Cache Primitives           | Canonical plan, scope-aware cache key, ETag — bring your own store         |
 
 ---
 
@@ -348,6 +353,50 @@ The standard `run` and `run_async` methods always return a plain list of items:
 result = query.run(db, User)
 ```
 
+### Cursor Pagination
+
+`offset` makes the database find and discard N rows before returning any, and it is
+defined against a snapshot that no longer exists — insert a record while someone pages
+through and every later page shifts by one. A cursor names the last record seen, in the
+query's own order, so the boundary cannot move.
+
+```python
+page = Querymate(sort=["-created_at"], limit=20).run_cursor_paginated(db, Post)
+# page.items, page.cursor.next, page.cursor.has_more
+
+following = Querymate(
+    sort=["-created_at"], limit=20, cursor=page.cursor.next
+).run_cursor_paginated(db, Post)
+```
+
+The primary key is appended as a tiebreaker so any sort gives a total order. The cursor
+is opaque and carries a fingerprint of the sort and filter that produced it — reuse it
+against a different query and it is refused, not silently misapplied. `cursor.total` is
+absent unless `with_total` asks for it, since that count is the work this avoids.
+
+---
+
+### Aggregation
+
+`group_by` returns the *records* of each group. "How much did each month bring in" is a
+different question, and answering it without aggregates means fetching every record and
+adding them up in the client.
+
+```python
+Querymate(
+    aggregate={"total": {"sum": "amount"}, "n": {"count": "*"}},
+    group_by="status",
+    having={"total": {"gt": 1000}},
+).run_aggregated(db, Order)
+# {"results": [{"key": "paid", "total": 4200, "n": 17}]}
+```
+
+Whatever the number of groups, it is one query. Row scopes and filters restrict what is
+summarised, and aggregating a column goes through the same field check as selecting it —
+an aggregate can never total rows the caller could not have read one by one.
+
+---
+
 ### Grouping
 
 Group query results by any field, including dates with configurable granularity and timezone support.
@@ -657,6 +706,28 @@ make docs
 # View the documentation
 open docs/_build/html/index.html
 ```
+
+---
+
+### Cost Budgets and Caching
+
+Every query reduces to a canonical **plan**: two requests differing only in field order
+or in the order of `and` branches produce the same digest. The cost estimate and the
+cache key both come from it, so they cannot disagree about what "the same query" means.
+
+```python
+from querymate import cache_key
+
+# Refuse what this caller cannot afford (no ceiling by default).
+scopes = registry.bind(principal=me, db=db, budget=200, identity=f"user:{me.id}")
+
+# Bring your own store; QueryMate supplies the key.
+key = cache_key(q.plan(User), scopes)
+```
+
+`cache_key` requires a scope identity and refuses to build a key without one: the same
+query returns different rows to different people, and a key that ignores who is asking
+serves one user's records to another — silently, from the first request onward.
 
 ---
 
