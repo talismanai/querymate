@@ -611,8 +611,8 @@ class QueryBuilder:
                 setattr(existing_obj, rel_name, new_rel)
             elif existing_rel is not None and new_rel is not None:
                 pk_cols = rel_property.mapper.primary_key
-                existing_pk = tuple(getattr(existing_rel, col.key) for col in pk_cols)
-                new_pk = tuple(getattr(new_rel, col.key) for col in pk_cols)
+                existing_pk = tuple(getattr(existing_rel, col.name) for col in pk_cols)
+                new_pk = tuple(getattr(new_rel, col.name) for col in pk_cols)
                 if existing_pk != new_pk:
                     logger.warning(
                         "Conflicting to-one relationship %r while merging duplicate rows "
