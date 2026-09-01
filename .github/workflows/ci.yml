@@ -35,7 +35,7 @@ jobs:
 
       - name: Create and activate virtual environment
         run: |
-          uv venv
+          uv venv --clear
           source .venv/bin/activate
           which python
           python --version
@@ -83,7 +83,7 @@ jobs:
 
       - name: Create and activate virtual environment
         run: |
-          uv venv
+          uv venv --clear
           source .venv/bin/activate
           which python
           python --version
