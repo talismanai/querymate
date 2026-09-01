@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator, Generator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
-from sqlmodel import Session, SQLModel, create_engine, desc, select
+from sqlmodel import Session, SQLModel, create_engine, desc, inspect, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
@@ -680,6 +681,68 @@ def test_reconstruct_objects_mixed_to_one_and_to_many(db: Session) -> None:
     assert len(payload) == 1
     assert payload[0]["team"] == {"id": 1, "name": "Legal"}
     assert {post["id"] for post in payload[0]["posts"]} == {1, 2}
+
+
+def test_merge_relationship_to_one_sets_value_when_missing() -> None:
+    """To-one merge should copy the related object when the first row had none."""
+    team = Team(id=1, name="Legal")
+    user = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30, team=None
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team
+
+
+def test_merge_relationship_to_many_initializes_list_when_missing() -> None:
+    """To-many merge should initialize an empty list when existing is None."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    existing_obj = SimpleNamespace(posts=None)
+    duplicate = SimpleNamespace(posts=[post])
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["posts"]
+    builder._merge_relationship(existing_obj, duplicate, "posts", rel_property)
+
+    assert existing_obj.posts == [post]
+
+
+def test_merge_relationship_to_many_skips_empty_new_relationship() -> None:
+    """To-many merge should no-op when the duplicate row has no related items."""
+    existing_post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[existing_post],
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[],
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["posts"]
+    builder._merge_relationship(user, duplicate, "posts", rel_property)
+
+    assert user.posts == [existing_post]
 
 
 async def test_exec_async(async_db: AsyncSession) -> None:
