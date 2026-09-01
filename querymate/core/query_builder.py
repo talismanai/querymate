@@ -609,6 +609,19 @@ class QueryBuilder:
         if rel_property is not None and not rel_property.uselist:
             if existing_rel is None and new_rel is not None:
                 setattr(existing_obj, rel_name, new_rel)
+            elif existing_rel is not None and new_rel is not None:
+                pk_cols = rel_property.mapper.primary_key
+                existing_pk = tuple(getattr(existing_rel, col.key) for col in pk_cols)
+                new_pk = tuple(getattr(new_rel, col.key) for col in pk_cols)
+                if existing_pk != new_pk:
+                    logger.warning(
+                        "Conflicting to-one relationship %r while merging duplicate rows "
+                        "for %r: keeping %r, ignoring %r",
+                        rel_name,
+                        existing_obj,
+                        existing_rel,
+                        new_rel,
+                    )
             return
 
         if existing_rel is None:

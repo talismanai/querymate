@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator, Generator
+from logging import WARNING
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -703,6 +704,70 @@ def test_merge_relationship_to_one_sets_value_when_missing() -> None:
     builder._merge_relationship(user, duplicate, "team", rel_property)
 
     assert user.team is team
+
+
+def test_merge_relationship_to_one_warns_on_conflicting_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """To-one merge should warn when duplicate rows disagree on the related object."""
+    team_a = Team(id=1, name="Legal")
+    team_b = Team(id=2, name="Ops")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_a,
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_b,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    with caplog.at_level(WARNING):
+        builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team_a
+    assert "Conflicting to-one relationship" in caplog.text
+
+
+def test_merge_relationship_to_one_does_not_warn_for_same_pk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Duplicate rows with different instances of the same related PK should not warn."""
+    team_a = Team(id=1, name="Legal")
+    team_b = Team(id=1, name="Legal")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_a,
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_b,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    with caplog.at_level(WARNING):
+        builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team_a
+    assert "Conflicting to-one relationship" not in caplog.text
 
 
 def test_merge_relationship_to_many_initializes_list_when_missing() -> None:
