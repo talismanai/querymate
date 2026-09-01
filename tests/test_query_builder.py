@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator, Generator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -713,7 +713,12 @@ def test_merge_relationship_to_many_initializes_list_when_missing() -> None:
 
     builder = QueryBuilder(User)
     rel_property = inspect(User).relationships["posts"]
-    builder._merge_relationship(existing_obj, duplicate, "posts", rel_property)
+    builder._merge_relationship(
+        cast(User, existing_obj),
+        cast(User, duplicate),
+        "posts",
+        rel_property,
+    )
 
     assert existing_obj.posts == [post]
 
