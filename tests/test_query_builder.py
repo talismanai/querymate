@@ -15,7 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
 from querymate.core.query_builder import QueryBuilder
-from tests.models import Post, User
+from tests.models import Post, Team, User
 
 
 @pytest.fixture
@@ -640,6 +640,46 @@ def test_relationship_types(db: Session) -> None:
     for post in post_results:
         assert not isinstance(post.user, list)  # type: ignore
         assert post.user.name == "John"
+
+
+def test_reconstruct_objects_mixed_to_one_and_to_many(db: Session) -> None:
+    """Selecting to-one and to-many together must merge duplicate SQL rows.
+
+    A to-many join produces one row per related item. Merging those rows used
+    to iterate to-one relationships as if they were lists, raising TypeError.
+    """
+    team = Team(id=1, name="Legal")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team_id=team.id,
+    )
+    post1 = Post(id=1, title="Post 1", content="Content 1", user_id=user.id)
+    post2 = Post(id=2, title="Post 2", content="Content 2", user_id=user.id)
+    db.add(team)
+    db.add(user)
+    db.add(post1)
+    db.add(post2)
+    db.commit()
+
+    builder = QueryBuilder(User).apply_select(
+        ["id", "name", {"team": ["id", "name"]}, {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    results = builder.fetch(db, User)
+
+    assert len(results) == 1
+    assert results[0].team is not None
+    assert results[0].team.name == "Legal"
+    assert {post.title for post in results[0].posts} == {"Post 1", "Post 2"}
+
+    payload = builder.serialize(results)
+    assert len(payload) == 1
+    assert payload[0]["team"] == {"id": 1, "name": "Legal"}
+    assert {post["id"] for post in payload[0]["posts"]} == {1, 2}
 
 
 async def test_exec_async(async_db: AsyncSession) -> None:

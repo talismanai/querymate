@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from querymate.core.querymate import Querymate
-from tests.models import Post, User
+from tests.models import Post, Team, User
 
 
 @pytest.fixture
@@ -575,6 +575,38 @@ def test_serialize_with_non_list_relationships(db: Session) -> None:
         "name": "John",
         "posts": [{"id": 1, "title": "Post 1"}],
     }
+
+
+def test_run_mixed_to_one_and_to_many_relationships(db: Session) -> None:
+    """A root with both to-one and to-many selects must not crash on multi-row joins."""
+    team = Team(id=1, name="Legal")
+    post1 = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    post2 = Post(id=2, title="Post 2", content="Content 2", user_id=1)
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team_id=team.id,
+        posts=[post1, post2],
+    )
+    db.add(team)
+    db.add(post1)
+    db.add(post2)
+    db.add(user)
+    db.commit()
+
+    querymate = Querymate(
+        select=["id", "name", {"team": ["id", "name"]}, {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    serialized = querymate.run(db=db, model=User)
+
+    assert isinstance(serialized, list)
+    assert len(serialized) == 1
+    assert serialized[0]["team"] == {"id": 1, "name": "Legal"}
+    assert {post["id"] for post in serialized[0]["posts"]} == {1, 2}
 
 
 async def test_serialize_simple_object_async(async_db: AsyncSession) -> None:

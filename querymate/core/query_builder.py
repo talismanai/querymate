@@ -588,6 +588,35 @@ class QueryBuilder:
         results = db.exec(self.query).all()
         return self.reconstruct_objects(cast(list[tuple[Any, ...]], results), model)
 
+    def _merge_relationship(
+        self,
+        existing_obj: T,
+        obj: T,
+        rel_name: str,
+        rel_property: RelationshipProperty | None,
+    ) -> None:
+        """Merge a related value from a duplicate SQL row into the first instance.
+
+        To-many relationships are lists and can be appended. To-one relationships
+        are scalars; iterating them raises TypeError.
+        """
+        existing_rel = getattr(existing_obj, rel_name, None)
+        new_rel = getattr(obj, rel_name, None)
+
+        if rel_property is not None and not rel_property.uselist:
+            if existing_rel is None and new_rel is not None:
+                setattr(existing_obj, rel_name, new_rel)
+            return
+
+        if existing_rel is None:
+            existing_rel = []
+            setattr(existing_obj, rel_name, existing_rel)
+        if not new_rel:
+            return
+        for item in new_rel:
+            if item not in existing_rel:
+                existing_rel.append(item)
+
     def reconstruct_objects(
         self, results: list[tuple[Any, ...]], model: type[T]
     ) -> list[T]:
@@ -628,12 +657,12 @@ class QueryBuilder:
                 for relation_name in self.select:
                     if isinstance(relation_name, dict):
                         for rel_name in relation_name:
-                            existing_rels = getattr(existing_obj, rel_name)
-                            new_rels = getattr(obj, rel_name)
-                            # Add any new related objects that aren't already present
-                            for new_rel in new_rels:
-                                if new_rel not in existing_rels:
-                                    existing_rels.append(new_rel)
+                            self._merge_relationship(
+                                existing_obj,
+                                obj,
+                                rel_name,
+                                mapper.relationships.get(rel_name),
+                            )
             else:
                 # First time seeing this object
                 # Ensure relationship attributes are initialized as empty lists if not set
