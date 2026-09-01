@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator, Generator
-from typing import Any
+from logging import WARNING
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -10,12 +12,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
-from sqlmodel import Session, SQLModel, create_engine, desc, select
+from sqlmodel import Session, SQLModel, create_engine, desc, inspect, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
 from querymate.core.query_builder import QueryBuilder
-from tests.models import Post, User
+from tests.models import Post, Team, User
 
 
 @pytest.fixture
@@ -640,6 +642,177 @@ def test_relationship_types(db: Session) -> None:
     for post in post_results:
         assert not isinstance(post.user, list)  # type: ignore
         assert post.user.name == "John"
+
+
+def test_reconstruct_objects_mixed_to_one_and_to_many(db: Session) -> None:
+    """Selecting to-one and to-many together must merge duplicate SQL rows.
+
+    A to-many join produces one row per related item. Merging those rows used
+    to iterate to-one relationships as if they were lists, raising TypeError.
+    """
+    team = Team(id=1, name="Legal")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team_id=team.id,
+    )
+    post1 = Post(id=1, title="Post 1", content="Content 1", user_id=user.id)
+    post2 = Post(id=2, title="Post 2", content="Content 2", user_id=user.id)
+    db.add(team)
+    db.add(user)
+    db.add(post1)
+    db.add(post2)
+    db.commit()
+
+    builder = QueryBuilder(User).apply_select(
+        ["id", "name", {"team": ["id", "name"]}, {"posts": ["id", "title"]}],
+        join_type="left",
+    )
+    results = builder.fetch(db, User)
+
+    assert len(results) == 1
+    assert results[0].team is not None
+    assert results[0].team.name == "Legal"
+    assert {post.title for post in results[0].posts} == {"Post 1", "Post 2"}
+
+    payload = builder.serialize(results)
+    assert len(payload) == 1
+    assert payload[0]["team"] == {"id": 1, "name": "Legal"}
+    assert {post["id"] for post in payload[0]["posts"]} == {1, 2}
+
+
+def test_merge_relationship_to_one_sets_value_when_missing() -> None:
+    """To-one merge should copy the related object when the first row had none."""
+    team = Team(id=1, name="Legal")
+    user = User(
+        id=1, name="John", is_active=True, email="john@example.com", age=30, team=None
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team
+
+
+def test_merge_relationship_to_one_warns_on_conflicting_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """To-one merge should warn when duplicate rows disagree on the related object."""
+    team_a = Team(id=1, name="Legal")
+    team_b = Team(id=2, name="Ops")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_a,
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_b,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    with caplog.at_level(WARNING):
+        builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team_a
+    assert "Conflicting to-one relationship" in caplog.text
+
+
+def test_merge_relationship_to_one_does_not_warn_for_same_pk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Duplicate rows with different instances of the same related PK should not warn."""
+    team_a = Team(id=1, name="Legal")
+    team_b = Team(id=1, name="Legal")
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_a,
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        team=team_b,
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["team"]
+    with caplog.at_level(WARNING):
+        builder._merge_relationship(user, duplicate, "team", rel_property)
+
+    assert user.team is team_a
+    assert "Conflicting to-one relationship" not in caplog.text
+
+
+def test_merge_relationship_to_many_initializes_list_when_missing() -> None:
+    """To-many merge should initialize an empty list when existing is None."""
+    post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    existing_obj = SimpleNamespace(posts=None)
+    duplicate = SimpleNamespace(posts=[post])
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["posts"]
+    builder._merge_relationship(
+        cast(User, existing_obj),
+        cast(User, duplicate),
+        "posts",
+        rel_property,
+    )
+
+    assert existing_obj.posts == [post]
+
+
+def test_merge_relationship_to_many_skips_empty_new_relationship() -> None:
+    """To-many merge should no-op when the duplicate row has no related items."""
+    existing_post = Post(id=1, title="Post 1", content="Content 1", user_id=1)
+    user = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[existing_post],
+    )
+    duplicate = User(
+        id=1,
+        name="John",
+        is_active=True,
+        email="john@example.com",
+        age=30,
+        posts=[],
+    )
+
+    builder = QueryBuilder(User)
+    rel_property = inspect(User).relationships["posts"]
+    builder._merge_relationship(user, duplicate, "posts", rel_property)
+
+    assert user.posts == [existing_post]
 
 
 async def test_exec_async(async_db: AsyncSession) -> None:
