@@ -598,7 +598,10 @@ class QueryBuilder:
         """Merge a related value from a duplicate SQL row into the first instance.
 
         To-many relationships are lists and can be appended. To-one relationships
-        are scalars; iterating them raises TypeError.
+        are scalars; iterating them raises TypeError, so they are backfilled instead:
+        the first non-null value seen for the root object wins, and later duplicate
+        rows are ignored even if their scalar value differs (a well-formed to-one FK
+        join should never produce disagreeing rows for the same root PK).
         """
         existing_rel = getattr(existing_obj, rel_name, None)
         new_rel = getattr(obj, rel_name, None)
