@@ -777,6 +777,100 @@ async def test_run_with_pagination_async(async_db: AsyncSession) -> None:
     assert p.next_page == 3
 
 
+def test_paginated_relationship_filter_counts_matching_roots(db: Session) -> None:
+    db.add_all([Team(id=1, name="target"), Team(id=2, name="other")])
+    db.add_all(
+        [
+            User(
+                id=index,
+                name=f"User {index}",
+                email=f"user{index}@example.com",
+                age=30,
+                is_active=True,
+                team_id=1 if index <= 26 else 2,
+            )
+            for index in range(1, 29)
+        ]
+    )
+    db.commit()
+
+    query = Querymate(
+        select=["id", {"team": ["name"]}],
+        filter={"and": [{"age": {"gte": 30}}, {"team.name": "target"}]},
+        sort=["id"],
+        limit=25,
+    )
+    first = query.run_paginated(db, User)
+    assert [item["id"] for item in first.items] == list(range(1, 26))
+    assert first.pagination.total == 26
+    assert first.pagination.pages == 2
+
+    query.offset = 25
+    last = query.run_paginated(db, User)
+    assert [item["id"] for item in last.items] == [26]
+    assert last.pagination.total == 26
+
+
+@pytest.mark.asyncio
+async def test_async_paginated_relationship_filter_counts_matching_roots(
+    async_db: AsyncSession,
+) -> None:
+    async_db.add_all([Team(id=1, name="target"), Team(id=2, name="other")])
+    async_db.add_all(
+        [
+            User(
+                id=index,
+                name=f"User {index}",
+                email=f"user{index}@example.com",
+                age=30,
+                is_active=True,
+                team_id=1 if index <= 26 else 2,
+            )
+            for index in range(1, 29)
+        ]
+    )
+    await async_db.commit()
+
+    query = Querymate(
+        select=["id", {"team": ["name"]}],
+        filter={"and": [{"age": {"gte": 30}}, {"team.name": "target"}]},
+        sort=["id"],
+        limit=25,
+    )
+    page = await query.run_async_paginated(async_db, User)
+    assert [item["id"] for item in page.items] == list(range(1, 26))
+    assert page.pagination.total == 26
+    assert page.pagination.pages == 2
+
+
+def test_paginated_to_many_filter_counts_distinct_roots(db: Session) -> None:
+    db.add_all(
+        [
+            User(
+                id=1, name="Target", email="target@example.com", age=30, is_active=True
+            ),
+            User(id=2, name="Other", email="other@example.com", age=30, is_active=True),
+        ]
+    )
+    db.add_all(
+        [
+            Post(id=1, title="match", content="", user_id=1),
+            Post(id=2, title="match", content="", user_id=1),
+            Post(id=3, title="other", content="", user_id=2),
+        ]
+    )
+    db.commit()
+
+    query = Querymate(
+        select=["id", {"posts": ["id", "title"]}],
+        filter={"posts.title": "match"},
+        limit=25,
+    )
+    page = query.run_paginated(db, User)
+    assert [item["id"] for item in page.items] == [1]
+    assert page.pagination.total == 1
+
+
 # ================================
 # Test cases for join_type parameter
 # ================================

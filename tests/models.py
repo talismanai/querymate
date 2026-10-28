@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -16,7 +16,7 @@ class User(SQLModel, table=True):
     age: int
     is_active: bool
     status: str = Field(default="active")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     birth_date: date | None = None
     last_login: datetime | None = None
     team_id: int | None = Field(default=None, foreign_key="team.id")
@@ -30,6 +30,6 @@ class Post(SQLModel, table=True):
     content: str
     status: str = Field(default="draft")
     user_id: int = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     published_at: datetime | None = None
     user: "User" = Relationship(back_populates="posts")

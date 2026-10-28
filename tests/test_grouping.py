@@ -1,7 +1,7 @@
 # type: ignore
 """Tests for grouped query functionality."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import Session
@@ -144,7 +144,7 @@ def populated_db(db: Session):
             age=25,
             is_active=True,
             status="active",
-            created_at=datetime(2024, 1, 15, 10, 30),
+            created_at=datetime(2024, 1, 15, 10, 30, tzinfo=UTC),
         ),
         User(
             id=2,
@@ -153,7 +153,7 @@ def populated_db(db: Session):
             age=30,
             is_active=True,
             status="active",
-            created_at=datetime(2024, 1, 20, 14, 45),
+            created_at=datetime(2024, 1, 20, 14, 45, tzinfo=UTC),
         ),
         User(
             id=3,
@@ -162,7 +162,7 @@ def populated_db(db: Session):
             age=35,
             is_active=False,
             status="inactive",
-            created_at=datetime(2024, 2, 10, 9, 0),
+            created_at=datetime(2024, 2, 10, 9, 0, tzinfo=UTC),
         ),
         User(
             id=4,
@@ -171,7 +171,7 @@ def populated_db(db: Session):
             age=28,
             is_active=True,
             status="pending",
-            created_at=datetime(2024, 2, 15, 11, 30),
+            created_at=datetime(2024, 2, 15, 11, 30, tzinfo=UTC),
         ),
         User(
             id=5,
@@ -180,7 +180,7 @@ def populated_db(db: Session):
             age=32,
             is_active=False,
             status="inactive",
-            created_at=datetime(2024, 3, 1, 8, 0),
+            created_at=datetime(2024, 3, 1, 8, 0, tzinfo=UTC),
         ),
     ]
 
@@ -195,7 +195,7 @@ def populated_db(db: Session):
             content="Content 1",
             status="published",
             user_id=1,
-            created_at=datetime(2024, 1, 15),
+            created_at=datetime(2024, 1, 15, tzinfo=UTC),
         ),
         Post(
             id=2,
@@ -203,7 +203,7 @@ def populated_db(db: Session):
             content="Content 2",
             status="draft",
             user_id=1,
-            created_at=datetime(2024, 1, 20),
+            created_at=datetime(2024, 1, 20, tzinfo=UTC),
         ),
         Post(
             id=3,
@@ -211,7 +211,7 @@ def populated_db(db: Session):
             content="Content 3",
             status="published",
             user_id=2,
-            created_at=datetime(2024, 2, 1),
+            created_at=datetime(2024, 2, 1, tzinfo=UTC),
         ),
         Post(
             id=4,
@@ -219,7 +219,7 @@ def populated_db(db: Session):
             content="Content 4",
             status="draft",
             user_id=3,
-            created_at=datetime(2024, 2, 15),
+            created_at=datetime(2024, 2, 15, tzinfo=UTC),
         ),
         Post(
             id=5,
@@ -227,7 +227,7 @@ def populated_db(db: Session):
             content="Content 5",
             status="archived",
             user_id=4,
-            created_at=datetime(2024, 3, 1),
+            created_at=datetime(2024, 3, 1, tzinfo=UTC),
         ),
     ]
 
@@ -333,7 +333,7 @@ class TestGroupedQueries:
                     age=20 + (i % 50),
                     is_active=True,
                     status=f"status_{i % 5}",
-                    created_at=datetime.now(),
+                    created_at=datetime.now(UTC),
                 )
             )
         populated_db.commit()
